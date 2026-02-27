@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nitro-enclave
+  namespace: default
+  labels:
+    app: nitro-enclave
+spec:
+  selector:
+    matchLabels:
+      app: nitro-enclave
+  template:
+    metadata:
+      labels:
+        app: nitro-enclave
+    spec:
+      # Enclaves run one-per-node; must be privileged to access /dev/nitro_enclaves.
+      hostPID: false
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: enclave-runner
+          image: placeholder/nitro-enc-svc:latest  # Replace with real ECR image
+          securityContext:
+            privileged: true
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1"
+            limits:
+              memory: "4Gi"
+              cpu: "2"
+          volumeMounts:
+            - name: nitro-device
+              mountPath: /dev/nitro_enclaves
+          env:
+            - name: SECRET_ARN
+              valueFrom:
+                secretKeyRef:
+                  name: nitro-enc-svc-config
+                  key: secret_arn
+            - name: KMS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: nitro-enc-svc-config
+                  key: kms_key_id
+            - name: S3_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: nitro-enc-svc-config
+                  key: s3_bucket
+            - name: VSOCK_PROXY_CID
+              value: "3"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://127.0.0.1:4317"
+      volumes:
+        - name: nitro-device
+          hostPath:
+            path: /dev/nitro_enclaves
+            type: CharDevice

@@ -1,0 +1,14 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2021"
+description = "Shared types, protocol definitions, and errors for nitro-enc-svc"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,83 @@
+[workspace]
+members = [
+    "crates/enclave",
+    "crates/vsock-proxy",
+    "crates/common",
+]
+resolver = "2"
+
+# ---------------------------------------------------------------------------
+# Shared dependency versions — referenced by crates via `workspace = true`
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP server
+axum = { version = "0.7", features = ["http2", "macros"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = { version = "0.4" }
+tower-http = { version = "0.5", features = ["trace", "timeout", "compression-full"] }
+
+# TLS
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+tokio-rustls = { version = "0.26" }
+rustls-pemfile = { version = "2" }
+
+# Vsock
+tokio-vsock = { version = "0.5" }
+
+# Encryption
+aes-gcm-siv = { version = "0.11" }
+base64 = { version = "0.22" }
+
+# Serialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+
+# OpenAPI
+openapiv3 = { version = "2" }
+
+# AWS SDK
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-kms = { version = "1" }
+aws-sdk-secretsmanager = { version = "1" }
+aws-sdk-s3 = { version = "1" }
+
+# OpenTelemetry
+opentelemetry = { version = "0.23" }
+opentelemetry_sdk = { version = "0.23", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp = { version = "0.16", features = ["grpc-tonic", "metrics"] }
+opentelemetry-semantic-conventions = { version = "0.15" }
+
+# Tracing / logging
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = { version = "0.24" }
+
+# Configuration
+config = { version = "0.14", default-features = false }
+
+# Error handling
+thiserror = { version = "1" }
+anyhow = { version = "1" }
+
+# Utilities
+arc-swap = { version = "1" }
+bytes = { version = "1" }
+uuid = { version = "1", features = ["v4"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Testing
+mockall = { version = "0.12" }
+axum-test = { version = "15" }
+
+# Internal crates
+common = { path = "crates/common" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

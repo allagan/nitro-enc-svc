@@ -1,0 +1,36 @@
+openapi: "3.0.0"
+info:
+  title: Payments API
+  version: "1"
+paths: {}
+components:
+  schemas:
+    PaymentRequest:
+      type: object
+      description: A payment request containing PII fields.
+      properties:
+        merchant_id:
+          type: string
+          description: Non-PII merchant identifier.
+        card_number:
+          type: string
+          description: Full card number — PII.
+          x-pii: true
+        card_holder_name:
+          type: string
+          description: Cardholder full name — PII.
+          x-pii: true
+        billing_address:
+          type: object
+          properties:
+            street:
+              type: string
+              x-pii: true
+            city:
+              type: string
+            zip:
+              type: string
+              x-pii: true
+        amount_cents:
+          type: integer
+          description: Transaction amount in cents — not PII.

@@ -1,0 +1,40 @@
+[package]
+name = "vsock-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "Sidecar: bidirectional TCP ↔ vsock tunnel for EKS pods"
+
+[[bin]]
+name = "vsock-proxy"
+path = "src/main.rs"
+
+[dependencies]
+# Internal
+common = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+
+# Vsock
+tokio-vsock = { workspace = true }
+
+# Serialisation (config)
+serde = { workspace = true }
+
+# Configuration
+config = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Tracing / logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
