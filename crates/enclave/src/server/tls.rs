@@ -10,12 +10,13 @@ use std::sync::Arc;
 
 /// Build a [`rustls::ServerConfig`] from PEM-encoded certificate and private key bytes.
 ///
+/// The bytes are typically loaded from the filesystem paths written by the
+/// ACM for Nitro Enclaves agent on the parent EC2 instance.
+///
 /// # Errors
 ///
 /// Returns an error if the certificate or key cannot be parsed, or if rustls
 /// rejects the configuration.
-// Called from main.rs once TLS is wired up with ACM for Nitro Enclaves.
-#[allow(dead_code)]
 pub fn build_server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<ServerConfig>> {
     let certs = rustls_pemfile::certs(&mut std::io::BufReader::new(cert_pem))
         .collect::<Result<Vec<_>, _>>()

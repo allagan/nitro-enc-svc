@@ -17,8 +17,11 @@ mod schema;
 mod server;
 mod telemetry;
 
-use anyhow::Result;
-use tracing::info;
+use anyhow::{Context, Result};
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use tokio_rustls::TlsAcceptor;
+use tower::ServiceExt as _;
+use tracing::{error, info, warn};
 
 use config::Config;
 use dek::DekStore;
@@ -70,17 +73,50 @@ async fn main() -> Result<()> {
     let _schema_refresh = schema::refresh_task(aws.clone(), cfg.clone(), schema_cache.clone());
 
     // -----------------------------------------------------------------------
-    // 7. HTTP server
+    // 7. TLS configuration (cert + key written by ACM for Nitro Enclaves)
+    // -----------------------------------------------------------------------
+    let cert_pem = std::fs::read(&cfg.tls_cert_path)
+        .with_context(|| format!("failed to read TLS cert: {}", cfg.tls_cert_path))?;
+    let key_pem = std::fs::read(&cfg.tls_key_path)
+        .with_context(|| format!("failed to read TLS key: {}", cfg.tls_key_path))?;
+    let tls_cfg = server::tls::build_server_config(&cert_pem, &key_pem)?;
+    let tls_acceptor = TlsAcceptor::from(tls_cfg);
+
+    // -----------------------------------------------------------------------
+    // 8. HTTPS server (TLS accept loop)
     // -----------------------------------------------------------------------
     let state = AppState::new(dek_store, schema_cache, cfg.schema_header_name.clone());
     let router = server::router::build(state);
 
     let addr: std::net::SocketAddr = ([0, 0, 0, 0], cfg.tls_port).into();
-    info!(addr = %addr, "listening");
-
-    // TODO: wrap listener with TLS (rustls / ACM for Nitro Enclaves).
+    info!(addr = %addr, "listening (TLS)");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router).await?;
 
-    Ok(())
+    loop {
+        let (tcp_stream, peer_addr) = listener.accept().await?;
+        let acceptor = tls_acceptor.clone();
+        let router = router.clone();
+
+        tokio::spawn(async move {
+            let tls_stream = match acceptor.accept(tcp_stream).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(peer = %peer_addr, err = %e, "TLS handshake failed");
+                    return;
+                }
+            };
+
+            let io = TokioIo::new(tls_stream);
+            let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                router.clone().oneshot(req.map(axum::body::Body::new))
+            });
+
+            if let Err(e) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
+                .serve_connection(io, svc)
+                .await
+            {
+                error!(peer = %peer_addr, err = %e, "connection error");
+            }
+        });
+    }
 }

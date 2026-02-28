@@ -45,6 +45,14 @@ pub struct Config {
     #[serde(default = "default_tls_port")]
     pub tls_port: u16,
 
+    /// Filesystem path to the PEM-encoded TLS certificate chain delivered by
+    /// ACM for Nitro Enclaves. **Required.**
+    pub tls_cert_path: String,
+
+    /// Filesystem path to the PEM-encoded TLS private key delivered by
+    /// ACM for Nitro Enclaves. **Required.**
+    pub tls_key_path: String,
+
     /// OTLP endpoint (vsock address to OTEL collector). **Required.**
     pub otel_exporter_otlp_endpoint: String,
 
@@ -101,6 +109,8 @@ impl Config {
         ensure_non_empty(&self.kms_key_id, "KMS_KEY_ID")?;
         ensure_non_empty(&self.s3_bucket, "S3_BUCKET")?;
         ensure_non_empty(&self.otel_exporter_otlp_endpoint, "OTEL_EXPORTER_OTLP_ENDPOINT")?;
+        ensure_non_empty(&self.tls_cert_path, "TLS_CERT_PATH")?;
+        ensure_non_empty(&self.tls_key_path, "TLS_KEY_PATH")?;
 
         if self.vsock_proxy_cid == 0 {
             anyhow::bail!("VSOCK_PROXY_CID must be a non-zero vsock CID");
@@ -150,6 +160,8 @@ mod tests {
             vsock_proxy_cid: 3,
             vsock_proxy_port: default_vsock_proxy_port(),
             tls_port: default_tls_port(),
+            tls_cert_path: "/run/acm/tls.crt".into(),
+            tls_key_path: "/run/acm/tls.key".into(),
             otel_exporter_otlp_endpoint: "vsock://3:4317".into(),
             log_level: default_log_level(),
         };
@@ -169,6 +181,8 @@ mod tests {
             vsock_proxy_cid: 0,
             vsock_proxy_port: default_vsock_proxy_port(),
             tls_port: default_tls_port(),
+            tls_cert_path: "/run/acm/tls.crt".into(),
+            tls_key_path: "/run/acm/tls.key".into(),
             otel_exporter_otlp_endpoint: "vsock://3:4317".into(),
             log_level: default_log_level(),
         };
