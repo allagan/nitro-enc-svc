@@ -2,57 +2,67 @@ apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: nitro-enclave
-  namespace: default
+  namespace: nitro-enc-svc
   labels:
     app: nitro-enclave
 spec:
   selector:
     matchLabels:
       app: nitro-enclave
+  # Roll one node at a time so encryption capacity is never fully lost.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
   template:
     metadata:
       labels:
         app: nitro-enclave
     spec:
-      # Enclaves run one-per-node; must be privileged to access /dev/nitro_enclaves.
-      hostPID: false
+      # Only schedule on nodes that have Nitro Enclaves enabled.
+      nodeSelector:
+        aws.amazon.com/nitro-enclaves: "true"
       tolerations:
         - operator: Exists
       containers:
         - name: enclave-runner
-          image: placeholder/nitro-enc-svc:latest  # Replace with real ECR image
+          # Image built by CodeBuild and pushed to ECR.
+          # Replace <ECR_REGISTRY> and <IMAGE_TAG> with the values from
+          # enclave/build-summary.json after each CodeBuild run.
+          image: <ECR_REGISTRY>/nitro-enc-svc/runner:<IMAGE_TAG>
           securityContext:
-            privileged: true
+            privileged: true   # Required: nitro-cli must access /dev/nitro_enclaves
+          # The runner container is a thin management shell. The enclave itself
+          # uses memory and CPU allocated from the host Nitro Enclaves allocator
+          # (configured in /etc/nitro_enclaves/allocator.yaml), not from these limits.
           resources:
             requests:
-              memory: "2Gi"
-              cpu: "1"
+              cpu: "100m"
+              memory: "64Mi"
             limits:
-              memory: "4Gi"
-              cpu: "2"
+              cpu: "500m"
+              memory: "256Mi"
           volumeMounts:
             - name: nitro-device
               mountPath: /dev/nitro_enclaves
           env:
-            - name: SECRET_ARN
-              valueFrom:
-                secretKeyRef:
-                  name: nitro-enc-svc-config
-                  key: secret_arn
-            - name: KMS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: nitro-enc-svc-config
-                  key: kms_key_id
-            - name: S3_BUCKET
-              valueFrom:
-                configMapKeyRef:
-                  name: nitro-enc-svc-config
-                  key: s3_bucket
-            - name: VSOCK_PROXY_CID
-              value: "3"
-            - name: OTEL_EXPORTER_OTLP_ENDPOINT
-              value: "http://127.0.0.1:4317"
+            # Memory (MB) to allocate to the enclave from the Nitro allocator.
+            # Must be pre-reserved in /etc/nitro_enclaves/allocator.yaml on the host.
+            - name: ENCLAVE_MEMORY_MB
+              value: "2048"
+            # vCPUs to allocate to the enclave. Same pre-reservation requirement.
+            - name: ENCLAVE_CPU_COUNT
+              value: "2"
+            # Vsock CID for this enclave.
+            # MUST match VSOCK_PROXY_CID baked into the EIF at build time,
+            # and ENCLAVE_CID in all vsock-proxy sidecar containers on this node.
+            - name: ENCLAVE_CID
+              value: "16"
+            # Optional — uncomment to override defaults:
+            # - name: EIF_PATH
+            #   value: "/enclave/nitro-enc-svc.eif"
+            # - name: HEALTH_CHECK_INTERVAL
+            #   value: "10"
       volumes:
         - name: nitro-device
           hostPath:

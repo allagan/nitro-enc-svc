@@ -1,0 +1,49 @@
+# Dockerfile.runner
+#
+# DaemonSet runner image: Amazon Linux 2023 + aws-nitro-enclaves-cli + baked-in EIF.
+# Pushed to ECR as $ECR_REPO_RUNNER:$IMAGE_TAG and deployed via daemonset-enclave.yaml.
+#
+# The EIF (enclave/nitro-enc-svc.eif) must be produced by
+# `nitro-cli build-enclave` before this image is built. In CodeBuild this
+# happens automatically in the build phase. The EIF is baked in here so a
+# single `docker pull` at pod startup is all that is needed.
+#
+# This container runs as root — nitro-cli requires root access to
+# /dev/nitro_enclaves to launch and manage enclaves.
+#
+# Runtime environment variables (set in daemonset-enclave.yaml):
+#   Required:
+#     ENCLAVE_MEMORY_MB     — Memory (MB) to allocate; must be pre-reserved in
+#                             /etc/nitro_enclaves/allocator.yaml on the host.
+#     ENCLAVE_CPU_COUNT     — vCPUs to allocate; same pre-reservation requirement.
+#     ENCLAVE_CID           — Vsock CID for this enclave. Must match VSOCK_PROXY_CID
+#                             baked into the EIF and used by vsock-proxy sidecars.
+#   Optional:
+#     EIF_PATH              — Override EIF location (default: /enclave/nitro-enc-svc.eif)
+#     HEALTH_CHECK_INTERVAL — Seconds between health polls (default: 10)
+
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023
+
+# Install aws-nitro-enclaves-cli and jq.
+# nitro-cli is used to run, monitor, and terminate the enclave.
+# jq is used by run-enclave.sh to parse nitro-cli JSON output.
+RUN dnf install -y \
+        aws-nitro-enclaves-cli \
+        jq \
+    && dnf clean all
+
+# Bake the EIF into the image.
+# Built by `nitro-cli build-enclave --docker-uri nitro-enc-svc-enclave:local
+#   --output-file enclave/nitro-enc-svc.eif` during CodeBuild.
+RUN mkdir -p /enclave
+COPY enclave/nitro-enc-svc.eif /enclave/nitro-enc-svc.eif
+
+# Runner entrypoint: launches the enclave, streams its console logs, and
+# health-monitors it in a loop so Kubernetes can restart on failure.
+COPY scripts/run-enclave.sh /usr/local/bin/run-enclave.sh
+RUN chmod +x /usr/local/bin/run-enclave.sh
+
+# nitro-cli requires root access to /dev/nitro_enclaves.
+USER root
+
+ENTRYPOINT ["/usr/local/bin/run-enclave.sh"]

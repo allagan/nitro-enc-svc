@@ -1,0 +1,177 @@
+version: 0.2
+
+# ---------------------------------------------------------------------------
+# AWS CodeBuild pipeline for nitro-enc-svc.
+#
+# Prerequisites:
+#   - Privileged mode enabled on the CodeBuild project (for Docker).
+#   - Build environment: Amazon Linux 2023 standard image.
+#   - IAM role with: ecr:GetAuthorizationToken, ecr:BatchCheckLayerAvailability,
+#     ecr:InitiateLayerUpload, ecr:UploadLayerPart, ecr:CompleteLayerUpload,
+#     ecr:PutImage, ecr:DescribeRepositories.
+#
+# Environment variables — set on the CodeBuild project (not here, since some
+# contain sensitive values):
+#
+#   Infrastructure:
+#     ECR_REGISTRY        e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com
+#     ECR_REPO_PROXY      e.g. nitro-enc-svc/vsock-proxy
+#     ECR_REPO_RUNNER     e.g. nitro-enc-svc/runner
+#     AWS_DEFAULT_REGION  e.g. us-east-1
+#
+#   Enclave config — baked into the EIF (one CodeBuild project per environment):
+#     SECRET_ARN
+#     KMS_KEY_ID
+#     S3_BUCKET
+#     VSOCK_PROXY_CID
+#     OTEL_EXPORTER_OTLP_ENDPOINT
+#
+#   Optional enclave config overrides (defaults match config.rs):
+#     S3_PREFIX                    (default: schemas/)
+#     SCHEMA_HEADER_NAME           (default: X-Schema-Name)
+#     DEK_ROTATION_INTERVAL_SECS   (default: 3600)
+#     SCHEMA_REFRESH_INTERVAL_SECS (default: 300)
+#     VSOCK_PROXY_PORT             (default: 8000)
+#     TLS_PORT                     (default: 443)
+#     TLS_CERT_PATH                (default: /run/acm/tls.crt)
+#     TLS_KEY_PATH                 (default: /run/acm/tls.key)
+#     LOG_LEVEL                    (default: info)
+#
+# Build artifacts (S3):
+#   enclave/pcr-values.json   — raw nitro-cli PCR measurements
+#   enclave/build-summary.json — structured summary with ECR URIs and PCR values
+#
+# IMPORTANT: After each build, read enclave/build-summary.json and update the
+# KMS key policy with the new PCR0 value BEFORE deploying the runner image.
+# ---------------------------------------------------------------------------
+
+phases:
+  install:
+    commands:
+      # nitro-cli: needed for `nitro-cli build-enclave` to produce the EIF.
+      # jq: used by run-enclave.sh and this buildspec to parse JSON output.
+      - dnf install -y aws-nitro-enclaves-cli jq
+
+      # C build toolchain: required by aws-lc-sys (transitive AWS SDK dependency)
+      # when running cargo test / clippy on the CodeBuild host.
+      - dnf install -y gcc gcc-c++ cmake make openssl-devel pkg-config
+
+      # Rust toolchain via rustup (AL2023 standard image does not include Rust).
+      - |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+      - source "$HOME/.cargo/env"
+      - rustup component add rustfmt clippy
+
+  pre_build:
+    commands:
+      - source "$HOME/.cargo/env"
+
+      # Compute a short image tag from the git commit SHA for traceability.
+      - export IMAGE_TAG=$(git rev-parse --short HEAD)
+      - echo "IMAGE_TAG=${IMAGE_TAG}"
+
+      # Authenticate Docker to ECR.
+      - |
+        aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" \
+          | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+
+      # Quality gates — must all pass before any images are built or pushed.
+      - cargo fmt --check
+      - cargo clippy --workspace --all-targets -- -D warnings
+      - cargo test --workspace
+
+  build:
+    commands:
+      - source "$HOME/.cargo/env"
+      - export IMAGE_TAG=$(git rev-parse --short HEAD)
+      - mkdir -p enclave
+
+      # -----------------------------------------------------------------------
+      # 1. Build the enclave OCI image.
+      #    This is the input to nitro-cli. It is NOT pushed to ECR.
+      #    All 14 config values are baked in via ARG → ENV so the enclave
+      #    process can read them via Config::from_env() at startup.
+      # -----------------------------------------------------------------------
+      - |
+        docker build -f Dockerfile.enclave \
+          --build-arg SECRET_ARN="${SECRET_ARN}" \
+          --build-arg KMS_KEY_ID="${KMS_KEY_ID}" \
+          --build-arg S3_BUCKET="${S3_BUCKET}" \
+          --build-arg VSOCK_PROXY_CID="${VSOCK_PROXY_CID}" \
+          --build-arg OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT}" \
+          --build-arg S3_PREFIX="${S3_PREFIX:-schemas/}" \
+          --build-arg SCHEMA_HEADER_NAME="${SCHEMA_HEADER_NAME:-X-Schema-Name}" \
+          --build-arg DEK_ROTATION_INTERVAL_SECS="${DEK_ROTATION_INTERVAL_SECS:-3600}" \
+          --build-arg SCHEMA_REFRESH_INTERVAL_SECS="${SCHEMA_REFRESH_INTERVAL_SECS:-300}" \
+          --build-arg VSOCK_PROXY_PORT="${VSOCK_PROXY_PORT:-8000}" \
+          --build-arg TLS_PORT="${TLS_PORT:-443}" \
+          --build-arg TLS_CERT_PATH="${TLS_CERT_PATH:-/run/acm/tls.crt}" \
+          --build-arg TLS_KEY_PATH="${TLS_KEY_PATH:-/run/acm/tls.key}" \
+          --build-arg LOG_LEVEL="${LOG_LEVEL:-info}" \
+          -t nitro-enc-svc-enclave:local .
+
+      # -----------------------------------------------------------------------
+      # 2. Convert the OCI image to an EIF and capture PCR measurements.
+      #    PCR0 is required to update the KMS key policy after each build.
+      # -----------------------------------------------------------------------
+      - |
+        nitro-cli build-enclave \
+          --docker-uri nitro-enc-svc-enclave:local \
+          --output-file enclave/nitro-enc-svc.eif \
+          | tee enclave/build-output.txt
+        # Extract the JSON measurements block (starts at the first '{' line).
+        awk '/^\{/,0' enclave/build-output.txt > enclave/pcr-values.json
+        echo "PCR values:"
+        cat enclave/pcr-values.json
+
+      # -----------------------------------------------------------------------
+      # 3. Build and push the vsock-proxy sidecar image.
+      # -----------------------------------------------------------------------
+      - |
+        docker build -f Dockerfile.vsock-proxy \
+          -t "${ECR_REGISTRY}/${ECR_REPO_PROXY}:${IMAGE_TAG}" \
+          -t "${ECR_REGISTRY}/${ECR_REPO_PROXY}:latest" .
+        docker push "${ECR_REGISTRY}/${ECR_REPO_PROXY}:${IMAGE_TAG}"
+        docker push "${ECR_REGISTRY}/${ECR_REPO_PROXY}:latest"
+
+      # -----------------------------------------------------------------------
+      # 4. Build and push the runner image (EIF baked in).
+      #    Dockerfile.runner COPYs enclave/nitro-enc-svc.eif built in step 2.
+      # -----------------------------------------------------------------------
+      - |
+        docker build -f Dockerfile.runner \
+          -t "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:${IMAGE_TAG}" \
+          -t "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:latest" .
+        docker push "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:${IMAGE_TAG}"
+        docker push "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:latest"
+
+  post_build:
+    commands:
+      - export IMAGE_TAG=$(git rev-parse --short HEAD)
+
+      # Write a structured build summary consumed by deployment tooling and
+      # the CodePipeline approval step (operator reads PCR0 and updates KMS policy).
+      - |
+        PCR0=$(jq -r '.Measurements.PCR0' enclave/pcr-values.json)
+        PCR1=$(jq -r '.Measurements.PCR1' enclave/pcr-values.json)
+        PCR2=$(jq -r '.Measurements.PCR2' enclave/pcr-values.json)
+        cat > enclave/build-summary.json <<EOF
+        {
+          "imageTag": "${IMAGE_TAG}",
+          "ecrRunner": "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:${IMAGE_TAG}",
+          "ecrProxy": "${ECR_REGISTRY}/${ECR_REPO_PROXY}:${IMAGE_TAG}",
+          "pcr0": "${PCR0}",
+          "pcr1": "${PCR1}",
+          "pcr2": "${PCR2}"
+        }
+        EOF
+        echo "=== Build summary ==="
+        cat enclave/build-summary.json
+        echo "====================="
+        echo "ACTION REQUIRED: Update the KMS key policy with PCR0=${PCR0} before rolling out the runner image."
+
+artifacts:
+  files:
+    - enclave/pcr-values.json
+    - enclave/build-summary.json
