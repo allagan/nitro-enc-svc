@@ -1,0 +1,136 @@
+# Dockerfile.enclave
+#
+# Builds the nitro-enc-svc OCI image used as input to `nitro-cli build-enclave`.
+# This image is NOT deployed to EKS or pushed to ECR — it is converted to an EIF file.
+#
+# All enclave configuration is baked in via ARG → ENV so that Config::from_env()
+# can read it at enclave startup. nitro-cli run-enclave cannot inject env vars from
+# the host into the enclave process.
+#
+# Required build args (must be supplied via --build-arg):
+#   SECRET_ARN, KMS_KEY_ID, S3_BUCKET, VSOCK_PROXY_CID, OTEL_EXPORTER_OTLP_ENDPOINT
+#
+# Usage:
+#   docker build -f Dockerfile.enclave \
+#     --build-arg SECRET_ARN=arn:aws:... \
+#     --build-arg KMS_KEY_ID=arn:aws:... \
+#     --build-arg S3_BUCKET=my-bucket \
+#     --build-arg VSOCK_PROXY_CID=3 \
+#     --build-arg OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317 \
+#     -t nitro-enc-svc-enclave:local .
+#
+#   nitro-cli build-enclave \
+#     --docker-uri nitro-enc-svc-enclave:local \
+#     --output-file nitro-enc-svc.eif
+
+# ---------------------------------------------------------------------------
+# Stage 1: Rust builder
+# ---------------------------------------------------------------------------
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS builder
+
+# Install C build dependencies required by aws-lc-sys (transitive via AWS SDK crates).
+RUN dnf install -y \
+        gcc \
+        gcc-c++ \
+        cmake \
+        make \
+        openssl-devel \
+        pkg-config \
+        git \
+        tar \
+        gzip \
+    && dnf clean all
+
+# Install Rust via rustup with a minimal stable toolchain.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable \
+    && rustup component add rustfmt clippy
+
+WORKDIR /build
+
+# ---------------------------------------------------------------------------
+# Dependency caching layer
+# Copy only manifest files and stub out source trees so `cargo fetch` can
+# download all crates without needing the real source.  When only source
+# files change on a rebuild, this layer is served from Docker cache.
+# ---------------------------------------------------------------------------
+COPY Cargo.toml Cargo.lock ./
+COPY crates/common/Cargo.toml   crates/common/Cargo.toml
+COPY crates/enclave/Cargo.toml  crates/enclave/Cargo.toml
+COPY crates/vsock-proxy/Cargo.toml crates/vsock-proxy/Cargo.toml
+
+RUN mkdir -p \
+        crates/common/src \
+        crates/enclave/src \
+        crates/vsock-proxy/src \
+    && echo 'pub fn stub() {}' > crates/common/src/lib.rs \
+    && echo 'fn main() {}' > crates/enclave/src/main.rs \
+    && echo 'fn main() {}' > crates/vsock-proxy/src/main.rs \
+    && cargo fetch --locked
+
+# ---------------------------------------------------------------------------
+# Full source build — only this layer reruns on source changes.
+# ---------------------------------------------------------------------------
+COPY crates/ crates/
+
+RUN cargo build --release --locked -p enclave
+
+# ---------------------------------------------------------------------------
+# Stage 2: Minimal runtime image (the enclave rootfs)
+# ---------------------------------------------------------------------------
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
+
+# Install ca-certificates so the enclave can verify TLS to AWS endpoints
+# reached through the vsock proxy.
+RUN dnf install -y ca-certificates \
+    && dnf clean all \
+    && useradd --system --no-create-home --shell /sbin/nologin enclave-svc
+
+COPY --from=builder /build/target/release/enclave /usr/local/bin/enclave
+
+# ---------------------------------------------------------------------------
+# Configuration — baked into the EIF as ENV instructions.
+#
+# REQUIRED: CodeBuild (or local docker build) must supply these via --build-arg.
+# If any required var is empty, Config::from_env() will exit at enclave startup
+# with a clear error message visible in `nitro-cli console` output.
+# ---------------------------------------------------------------------------
+ARG SECRET_ARN
+ARG KMS_KEY_ID
+ARG S3_BUCKET
+ARG VSOCK_PROXY_CID
+ARG OTEL_EXPORTER_OTLP_ENDPOINT
+
+ENV SECRET_ARN=${SECRET_ARN} \
+    KMS_KEY_ID=${KMS_KEY_ID} \
+    S3_BUCKET=${S3_BUCKET} \
+    VSOCK_PROXY_CID=${VSOCK_PROXY_CID} \
+    OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT}
+
+# ---------------------------------------------------------------------------
+# OPTIONAL: override defaults from config.rs if needed per environment.
+# ---------------------------------------------------------------------------
+ARG S3_PREFIX=schemas/
+ARG SCHEMA_HEADER_NAME=X-Schema-Name
+ARG DEK_ROTATION_INTERVAL_SECS=3600
+ARG SCHEMA_REFRESH_INTERVAL_SECS=300
+ARG VSOCK_PROXY_PORT=8000
+ARG TLS_PORT=443
+ARG LOG_LEVEL=info
+
+ENV S3_PREFIX=${S3_PREFIX} \
+    SCHEMA_HEADER_NAME=${SCHEMA_HEADER_NAME} \
+    DEK_ROTATION_INTERVAL_SECS=${DEK_ROTATION_INTERVAL_SECS} \
+    SCHEMA_REFRESH_INTERVAL_SECS=${SCHEMA_REFRESH_INTERVAL_SECS} \
+    VSOCK_PROXY_PORT=${VSOCK_PROXY_PORT} \
+    TLS_PORT=${TLS_PORT} \
+    LOG_LEVEL=${LOG_LEVEL}
+
+USER enclave-svc
+
+# The Nitro Enclave kernel boots the container ENTRYPOINT as PID 1.
+ENTRYPOINT ["/usr/local/bin/enclave"]

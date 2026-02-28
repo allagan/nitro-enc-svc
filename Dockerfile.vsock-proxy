@@ -1,0 +1,89 @@
+# Dockerfile.vsock-proxy
+#
+# Builds the vsock-proxy sidecar container image for EKS pods.
+# This is a standard Docker image (not an EIF) — pushed to ECR and deployed
+# as a sidecar alongside each application container that needs PII encryption.
+#
+# Configuration is injected at runtime via Kubernetes environment variables:
+#   Required: ENCLAVE_CID, MAIN_APP_ADDR
+#   Optional: LISTEN_PORT (8443), ENCLAVE_PORT (443), LOG_LEVEL (info)
+#
+# Usage:
+#   docker build -f Dockerfile.vsock-proxy -t vsock-proxy:local .
+
+# ---------------------------------------------------------------------------
+# Stage 1: Rust builder
+# ---------------------------------------------------------------------------
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS builder
+
+RUN dnf install -y \
+        gcc \
+        gcc-c++ \
+        cmake \
+        make \
+        openssl-devel \
+        pkg-config \
+        git \
+        tar \
+        gzip \
+    && dnf clean all
+
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+
+WORKDIR /build
+
+# ---------------------------------------------------------------------------
+# Dependency caching layer
+# ---------------------------------------------------------------------------
+COPY Cargo.toml Cargo.lock ./
+COPY crates/common/Cargo.toml      crates/common/Cargo.toml
+COPY crates/enclave/Cargo.toml     crates/enclave/Cargo.toml
+COPY crates/vsock-proxy/Cargo.toml crates/vsock-proxy/Cargo.toml
+
+RUN mkdir -p \
+        crates/common/src \
+        crates/enclave/src \
+        crates/vsock-proxy/src \
+    && echo 'pub fn stub() {}' > crates/common/src/lib.rs \
+    && echo 'fn main() {}' > crates/enclave/src/main.rs \
+    && echo 'fn main() {}' > crates/vsock-proxy/src/main.rs \
+    && cargo fetch --locked
+
+# ---------------------------------------------------------------------------
+# Full source build
+# ---------------------------------------------------------------------------
+COPY crates/ crates/
+
+RUN cargo build --release --locked -p vsock-proxy
+
+# ---------------------------------------------------------------------------
+# Stage 2: Minimal runtime image
+# ---------------------------------------------------------------------------
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
+
+RUN dnf install -y ca-certificates \
+    && dnf clean all \
+    && useradd --system --no-create-home --shell /sbin/nologin vsock-proxy-svc
+
+COPY --from=builder /build/target/release/vsock-proxy /usr/local/bin/vsock-proxy
+
+# Configuration is provided at runtime via Kubernetes env injection.
+# No ARG/ENV baking needed — vsock-proxy is a standard container process.
+#
+# Required env vars (from crates/vsock-proxy/src/config.rs):
+#   ENCLAVE_CID   — vsock CID of the Nitro Enclave on this node
+#   MAIN_APP_ADDR — address of the main app container (pod-local, e.g. 127.0.0.1:8080)
+#
+# Optional:
+#   LISTEN_PORT   — TCP port for incoming HTTPS connections (default: 8443)
+#   ENCLAVE_PORT  — vsock port the enclave TLS server listens on (default: 443)
+#   LOG_LEVEL     — tracing log level (default: info)
+
+USER vsock-proxy-svc
+
+ENTRYPOINT ["/usr/local/bin/vsock-proxy"]
