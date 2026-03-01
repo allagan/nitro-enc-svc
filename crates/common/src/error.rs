@@ -46,7 +46,10 @@ mod tests {
     #[test]
     fn http_status_codes() {
         assert_eq!(ServiceError::BadRequest("x".into()).http_status(), 400);
-        assert_eq!(ServiceError::EncryptionFailure("x".into()).http_status(), 500);
+        assert_eq!(
+            ServiceError::EncryptionFailure("x".into()).http_status(),
+            500
+        );
         assert_eq!(ServiceError::Unavailable("x".into()).http_status(), 503);
         assert_eq!(ServiceError::Internal("x".into()).http_status(), 500);
     }

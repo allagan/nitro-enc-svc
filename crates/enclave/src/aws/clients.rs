@@ -38,9 +38,7 @@ impl AwsClients {
         //       enclave networking layer is wired up.
         let endpoint_base = format!("http://127.0.0.1:{vsock_proxy_port}");
 
-        let config = aws_config::defaults(BehaviorVersion::latest())
-            .load()
-            .await;
+        let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
 
         let kms = aws_sdk_kms::Client::from_conf(
             aws_sdk_kms::config::Builder::from(&config)

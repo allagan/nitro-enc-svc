@@ -103,10 +103,8 @@ mod tests {
     use super::*;
 
     fn make_empty_api() -> OpenAPI {
-        serde_json::from_str(
-            r#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{}}"#,
-        )
-        .unwrap()
+        serde_json::from_str(r#"{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{}}"#)
+            .unwrap()
     }
 
     #[test]

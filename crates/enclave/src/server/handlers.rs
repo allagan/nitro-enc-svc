@@ -9,9 +9,9 @@ use axum::{
 use common::protocol::{EncryptRequest, EncryptResponse, ErrorResponse, HealthResponse};
 use tracing::warn;
 
+use super::state::AppState;
 use crate::crypto::cipher::{encrypt_field, CipherError};
 use crate::schema::PiiFieldPaths;
-use super::state::AppState;
 
 /// `POST /encrypt` — encrypt PII fields in the request payload.
 ///
@@ -30,7 +30,10 @@ pub async fn encrypt(
             Err(_) => {
                 let err = ErrorResponse::new(
                     "bad_request",
-                    format!("{} header contains non-ASCII characters", state.schema_header_name),
+                    format!(
+                        "{} header contains non-ASCII characters",
+                        state.schema_header_name
+                    ),
                 );
                 return (StatusCode::BAD_REQUEST, Json(err)).into_response();
             }
@@ -48,10 +51,7 @@ pub async fn encrypt(
     let cached = match state.schema_cache.get(&schema_name) {
         Ok(s) => s,
         Err(_) => {
-            let err = ErrorResponse::new(
-                "bad_request",
-                format!("unknown schema: {schema_name}"),
-            );
+            let err = ErrorResponse::new("bad_request", format!("unknown schema: {schema_name}"));
             return (StatusCode::BAD_REQUEST, Json(err)).into_response();
         }
     };
@@ -183,8 +183,8 @@ fn encrypt_pii_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, http::Request, Router};
     use axum::routing::get;
+    use axum::{body::Body, http::Request, Router};
     use tower::ServiceExt;
 
     fn test_router() -> Router {

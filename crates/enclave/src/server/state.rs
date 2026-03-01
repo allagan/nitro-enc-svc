@@ -21,11 +21,7 @@ pub struct AppState {
 
 impl AppState {
     /// Create a new [`AppState`] with the provided stores and header name.
-    pub fn new(
-        dek_store: DekStore,
-        schema_cache: SchemaCache,
-        schema_header_name: String,
-    ) -> Self {
+    pub fn new(dek_store: DekStore, schema_cache: SchemaCache, schema_header_name: String) -> Self {
         Self {
             dek_store,
             schema_cache,
@@ -37,10 +33,6 @@ impl AppState {
 impl Default for AppState {
     /// Creates a default [`AppState`] with empty stores, suitable for tests.
     fn default() -> Self {
-        Self::new(
-            DekStore::new(),
-            SchemaCache::new(),
-            "X-Schema-Name".into(),
-        )
+        Self::new(DekStore::new(), SchemaCache::new(), "X-Schema-Name".into())
     }
 }

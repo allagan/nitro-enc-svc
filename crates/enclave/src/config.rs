@@ -108,7 +108,10 @@ impl Config {
         ensure_non_empty(&self.secret_arn, "SECRET_ARN")?;
         ensure_non_empty(&self.kms_key_id, "KMS_KEY_ID")?;
         ensure_non_empty(&self.s3_bucket, "S3_BUCKET")?;
-        ensure_non_empty(&self.otel_exporter_otlp_endpoint, "OTEL_EXPORTER_OTLP_ENDPOINT")?;
+        ensure_non_empty(
+            &self.otel_exporter_otlp_endpoint,
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+        )?;
         ensure_non_empty(&self.tls_cert_path, "TLS_CERT_PATH")?;
         ensure_non_empty(&self.tls_key_path, "TLS_KEY_PATH")?;
 

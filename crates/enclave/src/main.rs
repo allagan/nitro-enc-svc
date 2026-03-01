@@ -107,9 +107,10 @@ async fn main() -> Result<()> {
             };
 
             let io = TokioIo::new(tls_stream);
-            let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                router.clone().oneshot(req.map(axum::body::Body::new))
-            });
+            let svc =
+                hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    router.clone().oneshot(req.map(axum::body::Body::new))
+                });
 
             if let Err(e) = hyper_util::server::conn::auto::Builder::new(TokioExecutor::new())
                 .serve_connection(io, svc)

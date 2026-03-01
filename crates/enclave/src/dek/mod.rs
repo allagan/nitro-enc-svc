@@ -79,13 +79,8 @@ pub async fn fetch_and_store(aws: &AwsClients, cfg: &Config, store: &DekStore) -
 /// The first rotation fires after one full interval (startup fetch is assumed
 /// to have already populated the store). On rotation failure the previous key
 /// is retained and a warning is emitted.
-pub fn rotation_task(
-    aws: AwsClients,
-    cfg: Config,
-    store: DekStore,
-) -> tokio::task::JoinHandle<()> {
-    let interval =
-        std::time::Duration::from_secs(cfg.dek_rotation_interval_secs);
+pub fn rotation_task(aws: AwsClients, cfg: Config, store: DekStore) -> tokio::task::JoinHandle<()> {
+    let interval = std::time::Duration::from_secs(cfg.dek_rotation_interval_secs);
     tokio::spawn(async move {
         let mut ticker = time::interval(interval);
         // First tick fires immediately — skip it so we don't double-fetch.

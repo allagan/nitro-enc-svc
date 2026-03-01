@@ -149,14 +149,26 @@ mod tests {
 
     #[test]
     fn schema_name_strips_prefix_and_extension() {
-        assert_eq!(schema_name_from_key("schemas/payments-v1.yaml", "schemas/"), "payments-v1");
-        assert_eq!(schema_name_from_key("schemas/users.json", "schemas/"), "users");
-        assert_eq!(schema_name_from_key("schemas/orders.yml", "schemas/"), "orders");
+        assert_eq!(
+            schema_name_from_key("schemas/payments-v1.yaml", "schemas/"),
+            "payments-v1"
+        );
+        assert_eq!(
+            schema_name_from_key("schemas/users.json", "schemas/"),
+            "users"
+        );
+        assert_eq!(
+            schema_name_from_key("schemas/orders.yml", "schemas/"),
+            "orders"
+        );
     }
 
     #[test]
     fn schema_name_no_prefix_match() {
-        assert_eq!(schema_name_from_key("other/file.yaml", "schemas/"), "other/file");
+        assert_eq!(
+            schema_name_from_key("other/file.yaml", "schemas/"),
+            "other/file"
+        );
     }
 
     #[test]

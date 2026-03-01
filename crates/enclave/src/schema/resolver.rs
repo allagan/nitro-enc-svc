@@ -375,8 +375,7 @@ components:
     /// known PII fields at its top level.
     #[test]
     fn iso_20022_flat_pii_fields_detected() {
-        let api: OpenAPI =
-            serde_yaml::from_str(ISO_20022_YAML).expect("iso-20022.yaml must parse");
+        let api: OpenAPI = serde_yaml::from_str(ISO_20022_YAML).expect("iso-20022.yaml must parse");
         let paths = resolve_pii_paths(&api);
 
         // OBCashAccount3 declares Identification, Name, SecondaryIdentification as x-pii: true.
@@ -392,8 +391,7 @@ components:
     /// carries `x-pii: true`. The resolver must emit `AddressLine[]`.
     #[test]
     fn iso_20022_array_of_pii_strings_detected() {
-        let api: OpenAPI =
-            serde_yaml::from_str(ISO_20022_YAML).expect("iso-20022.yaml must parse");
+        let api: OpenAPI = serde_yaml::from_str(ISO_20022_YAML).expect("iso-20022.yaml must parse");
         let paths = resolve_pii_paths(&api);
         assert!(
             paths.contains("AddressLine[]"),
@@ -406,8 +404,7 @@ components:
     /// as `DebtorAccount.<field>`.
     #[test]
     fn iso_20022_ref_pii_fields_resolved() {
-        let api: OpenAPI =
-            serde_yaml::from_str(ISO_20022_YAML).expect("iso-20022.yaml must parse");
+        let api: OpenAPI = serde_yaml::from_str(ISO_20022_YAML).expect("iso-20022.yaml must parse");
         let paths = resolve_pii_paths(&api);
 
         for field in ["Identification", "Name"] {

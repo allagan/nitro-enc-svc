@@ -1,6 +1,9 @@
 //! Axum router construction.
 
-use axum::{routing::{get, post}, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use tower_http::{compression::CompressionLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
 use super::{handlers, middleware, state::AppState};
