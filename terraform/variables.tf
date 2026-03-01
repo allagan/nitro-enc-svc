@@ -40,12 +40,24 @@ variable "public_access_cidrs" {
   default     = ["0.0.0.0/0"]
 }
 
+variable "cluster_admin_arns" {
+  description = "List of IAM principal ARNs (users/roles) granted cluster-admin access via EKS access entries."
+  type        = list(string)
+  default     = []
+}
+
 # ── VPC ───────────────────────────────────────────────────────────────────────
 
 variable "vpc_cidr" {
   description = "CIDR block for the VPC."
   type        = string
   default     = "10.0.0.0/16"
+}
+
+variable "single_nat_gateway" {
+  description = "Use a single NAT gateway instead of one per AZ. Reduces cost for dev/test environments."
+  type        = bool
+  default     = false
 }
 
 variable "availability_zones" {

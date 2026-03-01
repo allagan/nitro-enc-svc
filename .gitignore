@@ -6,3 +6,10 @@ Cargo.lock
 *.pem
 *.key
 *.crt
+terraform.tfvars
+
+# Terraform runtime artifacts
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+tfplan

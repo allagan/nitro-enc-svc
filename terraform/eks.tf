@@ -129,10 +129,6 @@ resource "aws_launch_template" "nitro_enclave" {
     }
   }
 
-  iam_instance_profile {
-    arn = aws_iam_instance_profile.enclave_node.arn
-  }
-
   user_data = base64encode(templatefile("${path.module}/templates/node_userdata.sh.tpl", {
     cluster_name      = var.cluster_name
     enclave_memory_mb = var.enclave_memory_mb
@@ -271,6 +267,30 @@ resource "aws_eks_addon" "ebs_csi_driver" {
   tags = {
     Name = "${var.cluster_name}-ebs-csi-driver"
   }
+}
+
+# ── Cluster admin access entries ──────────────────────────────────────────
+
+resource "aws_eks_access_entry" "admin" {
+  for_each = toset(var.cluster_admin_arns)
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.key
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "admin" {
+  for_each = toset(var.cluster_admin_arns)
+
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = each.key
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.admin]
 }
 
 # ── Pod Identity associations ─────────────────────────────────────────────────
