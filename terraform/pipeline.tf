@@ -115,26 +115,6 @@ resource "aws_codebuild_project" "build" {
     type = "CODEPIPELINE"
   }
 
-  secondary_artifacts {
-    type              = "S3"
-    artifact_identifier = "pcr_values"
-    location          = aws_s3_bucket.pipeline_artifacts.id
-    path              = "builds"
-    name              = "pcr-values.json"
-    packaging         = "NONE"
-    encryption_disabled = false
-  }
-
-  secondary_artifacts {
-    type              = "S3"
-    artifact_identifier = "build_summary"
-    location          = aws_s3_bucket.pipeline_artifacts.id
-    path              = "builds"
-    name              = "build-summary.json"
-    packaging         = "NONE"
-    encryption_disabled = false
-  }
-
   logs_config {
     cloudwatch_logs {
       group_name  = aws_cloudwatch_log_group.codebuild.name

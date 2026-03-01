@@ -86,7 +86,7 @@ FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
 
 # Install ca-certificates so the enclave can verify TLS to AWS endpoints
 # reached through the vsock proxy.
-RUN dnf install -y ca-certificates \
+RUN dnf install -y ca-certificates shadow-utils \
     && dnf clean all \
     && useradd --system --no-create-home --shell /sbin/nologin enclave-svc
 

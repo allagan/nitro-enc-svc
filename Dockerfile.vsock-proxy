@@ -66,7 +66,7 @@ RUN cargo build --release --locked -p vsock-proxy
 # ---------------------------------------------------------------------------
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
 
-RUN dnf install -y ca-certificates \
+RUN dnf install -y ca-certificates shadow-utils \
     && dnf clean all \
     && useradd --system --no-create-home --shell /sbin/nologin vsock-proxy-svc
 
