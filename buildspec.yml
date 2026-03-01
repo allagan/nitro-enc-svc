@@ -49,8 +49,11 @@ phases:
   install:
     commands:
       # nitro-cli: needed for `nitro-cli build-enclave` to produce the EIF.
+      # aws-nitro-enclaves-cli-devel: provides the kernel blobs
+      # (/usr/share/nitro_enclaves/blobs/) required by nitro-cli build-enclave
+      # even without Nitro hardware (used only for EIF construction, not launch).
       # jq: used by run-enclave.sh and this buildspec to parse JSON output.
-      - dnf install -y aws-nitro-enclaves-cli jq
+      - dnf install -y aws-nitro-enclaves-cli aws-nitro-enclaves-cli-devel jq
 
       # C build toolchain: required by aws-lc-sys (transitive AWS SDK dependency)
       # when running cargo test / clippy on the CodeBuild host.
@@ -67,8 +70,10 @@ phases:
     commands:
       - source "$HOME/.cargo/env"
 
-      # Compute a short image tag from the git commit SHA for traceability.
-      - export IMAGE_TAG=$(git rev-parse --short HEAD)
+      # Derive a short image tag from the resolved git commit SHA.
+      # CODEBUILD_RESOLVED_SOURCE_VERSION is set by CodeBuild from the
+      # CodeStar connection; git is not available with CODEPIPELINE source type.
+      - export IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}"
       - echo "IMAGE_TAG=${IMAGE_TAG}"
 
       # Authenticate Docker to ECR.
@@ -84,7 +89,7 @@ phases:
   build:
     commands:
       - source "$HOME/.cargo/env"
-      - export IMAGE_TAG=$(git rev-parse --short HEAD)
+      - export IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}"
       - mkdir -p enclave
 
       # -----------------------------------------------------------------------
@@ -148,7 +153,7 @@ phases:
 
   post_build:
     commands:
-      - export IMAGE_TAG=$(git rev-parse --short HEAD)
+      - export IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}"
 
       # Write a structured build summary consumed by deployment tooling and
       # the CodePipeline approval step (operator reads PCR0 and updates KMS policy).
