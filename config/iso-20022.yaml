@@ -1,0 +1,1449 @@
+openapi: 3.1.0
+
+info:
+  title: ISO 20022 / Open Banking Payment & Account APIs (PII-Annotated)
+  description: |
+    This OpenAPI specification covers the core ISO 20022-aligned REST APIs used in
+    Open Banking (UK OBIE v3.1.x / Berlin Group NextGenPSD2 v1.3.x), annotated with
+    `x-pii: true` on every field that constitutes Personally Identifiable Information
+    under GDPR, UK DPA 2018, and CCPA.
+
+    ## PII Tagging Convention
+    - `x-pii: true` — field is PII and MUST be encrypted at rest and in transit
+    - `x-pii-category` — classification of the PII type for encryption/tokenization policy:
+        - `DIRECT_IDENTIFIER`  — directly identifies a person (name, account number, IBAN)
+        - `FINANCIAL`          — financial account or payment reference data
+        - `CONTACT`            — address, phone, email
+        - `QUASI_IDENTIFIER`   — alone benign but combinable (date of birth, postcode)
+        - `CREDENTIAL`         — authentication/access data
+    - `x-pii-encrypt-algo` — recommended encryption algorithm
+        - `AES-256-GCM`        — recommended for most PII fields
+        - `FPE-FF3-1`          — Format-Preserving Encryption (good for account numbers / IBANs)
+        - `TOKENIZE`           — replace with opaque token (preferred for cross-system references)
+
+    ## ISO 20022 Message Coverage
+    - `pacs.008`  — FI to FI Customer Credit Transfer
+    - `pacs.002`  — Payment Status Report
+    - `camt.052`  — Bank to Customer Account Report
+    - `camt.053`  — Bank to Customer Statement
+    - `pain.001`  — Customer Credit Transfer Initiation
+    - `pain.002`  — Customer Payment Status Report
+
+    ## Standards Alignment
+    - ISO 20022:2013 / TS 23029:2020 (WAPI)
+    - Open Banking UK (OBIE) Read/Write API v3.1.11
+    - Berlin Group NextGenPSD2 v1.3.12 (XS2A)
+    - Security: FAPI 1.0 Advanced, OAuth 2.0 (RFC 6749), mTLS (RFC 8705)
+
+  version: "3.1.11"
+  contact:
+    name: Open Banking Standards
+    url: https://standards.openbanking.org.uk
+  license:
+    name: Open Licence v2.0
+    url: https://www.nationalarchives.gov.uk/doc/open-government-licence/version/2/
+
+servers:
+  - url: https://{aspsp-host}/open-banking/v3.1
+    description: ASPSP (Account Servicing Payment Service Provider) base URL
+    variables:
+      aspsp-host:
+        default: api.bank.example.com
+        description: The host of the ASPSP's API
+
+security:
+  - OAuthTPP:
+      - payments
+      - accounts
+
+tags:
+  - name: Payment Initiation
+    description: |
+      APIs for initiating domestic and international payments (ISO 20022 pain.001 / pacs.008).
+      All debtor/creditor party fields are PII and subject to encryption policy.
+  - name: Account Information
+    description: |
+      APIs for reading account balances and transactions (ISO 20022 camt.052 / camt.053).
+      Account holder, beneficiary, and counterparty fields are PII.
+  - name: Payment Status
+    description: |
+      Retrieve the status of previously submitted payment orders (ISO 20022 pacs.002 / pain.002).
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────────────────────────────────────
+paths:
+
+  # ── DOMESTIC PAYMENT CONSENT ─────────────────────────────────────────────
+  /domestic-payment-consents:
+    post:
+      tags: [Payment Initiation]
+      summary: Create Domestic Payment Consent (pain.001 / pacs.008)
+      operationId: createDomesticPaymentConsent
+      description: |
+        Stage a domestic payment consent. Maps to ISO 20022 CustomerCreditTransferInitiation
+        (pain.001) and FIToFICustomerCreditTransfer (pacs.008).
+        The request body contains debtor/creditor party data — all PII fields are tagged.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OBWriteDomesticConsent4'
+      responses:
+        '201':
+          description: Domestic Payment Consent Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OBWriteDomesticConsentResponse5'
+        '400':
+          $ref: '#/components/responses/400ErrorResponse'
+        '401':
+          $ref: '#/components/responses/401ErrorResponse'
+        '403':
+          $ref: '#/components/responses/403ErrorResponse'
+      security:
+        - OAuthTPP: [payments]
+
+  /domestic-payment-consents/{ConsentId}:
+    get:
+      tags: [Payment Initiation]
+      summary: Get Domestic Payment Consent
+      operationId: getDomesticPaymentConsentsConsentId
+      parameters:
+        - $ref: '#/components/parameters/ConsentId'
+      responses:
+        '200':
+          description: Domestic Payment Consent Read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OBWriteDomesticConsentResponse5'
+        '400':
+          $ref: '#/components/responses/400ErrorResponse'
+      security:
+        - OAuthTPP: [payments]
+
+  # ── DOMESTIC PAYMENT SUBMISSION ──────────────────────────────────────────
+  /domestic-payments:
+    post:
+      tags: [Payment Initiation]
+      summary: Submit Domestic Payment (pacs.008)
+      operationId: createDomesticPayment
+      description: |
+        Submit a domestic payment order. Requires a ConsentId from a prior consent.
+        Aligns to ISO 20022 pacs.008.001.08 FIToFICustomerCreditTransfer.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OBWriteDomestic2'
+      responses:
+        '201':
+          description: Domestic Payment Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OBWriteDomesticResponse5'
+      security:
+        - OAuthTPP: [payments]
+
+  /domestic-payments/{DomesticPaymentId}:
+    get:
+      tags: [Payment Status]
+      summary: Get Domestic Payment (pacs.002)
+      operationId: getDomesticPaymentsDomesticPaymentId
+      description: Retrieve status of a domestic payment. Maps to ISO 20022 pacs.002 PaymentStatusReport.
+      parameters:
+        - $ref: '#/components/parameters/DomesticPaymentId'
+      responses:
+        '200':
+          description: Domestic Payment Read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OBWriteDomesticResponse5'
+      security:
+        - OAuthTPP: [payments]
+
+  # ── INTERNATIONAL PAYMENT CONSENT ────────────────────────────────────────
+  /international-payment-consents:
+    post:
+      tags: [Payment Initiation]
+      summary: Create International Payment Consent (pain.001 cross-border)
+      operationId: createInternationalPaymentConsent
+      description: |
+        Cross-border payment consent. Contains full creditor agent, creditor party,
+        remittance information. Maps to ISO 20022 pain.001 with pacs.008 cross-border variant.
+        Note: Creditor name, address, account details are all PII.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OBWriteInternationalConsent5'
+      responses:
+        '201':
+          description: International Payment Consent Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OBWriteInternationalConsentResponse6'
+      security:
+        - OAuthTPP: [payments]
+
+  # ── ACCOUNT INFORMATION ─────────────────────────────────────────────────
+  /accounts:
+    get:
+      tags: [Account Information]
+      summary: Get Accounts (camt.052 / camt.053)
+      operationId: getAccounts
+      description: |
+        Retrieve a list of accounts. Maps to ISO 20022 camt.052 BankToCustomerAccountReport.
+        Account number and sort code are DIRECT_IDENTIFIER PII.
+      responses:
+        '200':
+          description: Accounts Read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OBReadAccount6'
+      security:
+        - OAuthTPP: [accounts]
+
+  /accounts/{AccountId}/transactions:
+    get:
+      tags: [Account Information]
+      summary: Get Account Transactions (camt.053)
+      operationId: getAccountsAccountIdTransactions
+      description: |
+        Transaction history for an account. Maps to ISO 20022 camt.053.
+        Contains counterparty names, creditor/debtor details — all PII.
+      parameters:
+        - $ref: '#/components/parameters/AccountId'
+        - $ref: '#/components/parameters/FromBookingDateTime'
+        - $ref: '#/components/parameters/ToBookingDateTime'
+      responses:
+        '200':
+          description: Account Transactions Read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OBReadTransaction6'
+      security:
+        - OAuthTPP: [accounts]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────────────────────────────────────
+components:
+
+  # ── SECURITY SCHEMES ──────────────────────────────────────────────────────
+  securitySchemes:
+    OAuthTPP:
+      type: oauth2
+      description: |
+        OAuth 2.0 with FAPI 1.0 Advanced profile.
+        Requires mTLS (RFC 8705) and PKCE (RFC 7636).
+        Tokens are bound to the TPP's eIDAS QWAC certificate.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.bank.example.com/oauth2/authorize
+          tokenUrl: https://auth.bank.example.com/oauth2/token
+          scopes:
+            payments: Initiate and manage payments
+            accounts: Read account information and transactions
+
+  # ── PARAMETERS ────────────────────────────────────────────────────────────
+  parameters:
+    ConsentId:
+      name: ConsentId
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 128
+    DomesticPaymentId:
+      name: DomesticPaymentId
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 40
+    AccountId:
+      name: AccountId
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 40
+      x-pii: true
+      x-pii-category: FINANCIAL
+      x-pii-encrypt-algo: TOKENIZE
+    FromBookingDateTime:
+      name: fromBookingDateTime
+      in: query
+      schema:
+        type: string
+        format: date-time
+    ToBookingDateTime:
+      name: toBookingDateTime
+      in: query
+      schema:
+        type: string
+        format: date-time
+
+  # ── RESPONSES ─────────────────────────────────────────────────────────────
+  responses:
+    400ErrorResponse:
+      description: Bad Request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OBErrorResponse1'
+    401ErrorResponse:
+      description: Unauthorized
+    403ErrorResponse:
+      description: Forbidden
+
+  # ── SCHEMAS ───────────────────────────────────────────────────────────────
+  schemas:
+
+    # ── PARTY / IDENTITY COMPONENTS (high PII density) ──────────────────────
+
+    OBBranchAndFinancialInstitutionIdentification6:
+      description: |
+        ISO 20022: BranchAndFinancialInstitutionIdentification6 (FinancialInstitutionIdentification)
+        Used in pacs.008/pain.001 as DebtorAgent / CreditorAgent.
+        BIC and LEI are direct financial identifiers.
+      type: object
+      properties:
+        SchemeName:
+          type: string
+          description: "ISO 20022: FinancialInstitutionIdentification/ClearingSystemMemberIdentification/ClearingSystemId. e.g. UK.OBIE.BICFI"
+        Identification:
+          type: string
+          maxLength: 35
+          description: "BIC (Business Identifier Code) of the financial institution."
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: FPE-FF3-1
+        Name:
+          type: string
+          maxLength: 140
+          description: "Legal name of the financial institution."
+          x-pii: true
+          x-pii-category: DIRECT_IDENTIFIER
+          x-pii-encrypt-algo: AES-256-GCM
+        LEI:
+          type: string
+          maxLength: 20
+          description: "Legal Entity Identifier (ISO 17442). Direct institution identifier."
+          x-pii: true
+          x-pii-category: DIRECT_IDENTIFIER
+          x-pii-encrypt-algo: FPE-FF3-1
+        PostalAddress:
+          $ref: '#/components/schemas/OBPostalAddress6'
+
+    OBCashAccount3:
+      description: |
+        ISO 20022: CashAccount38 — used as Debtor/Creditor account in pain.001 and pacs.008.
+        Contains IBAN and Sort Code / Account Number — high-value PII financial identifiers.
+      type: object
+      required:
+        - SchemeName
+        - Identification
+      properties:
+        SchemeName:
+          type: string
+          description: "Identifies the scheme used for the identification. e.g. UK.OBIE.IBAN, UK.OBIE.SortCodeAccountNumber"
+          enum:
+            - UK.OBIE.IBAN
+            - UK.OBIE.SortCodeAccountNumber
+            - UK.OBIE.PAN
+            - UK.OBIE.Paym
+            - UK.OBIE.BIC
+        Identification:
+          type: string
+          maxLength: 256
+          description: |
+            ISO 20022: Account/Identification.
+            Contains IBAN (e.g. GB29NWBK60161331926819) or Sort Code + Account Number.
+            HIGH RISK PII — direct financial identifier. Must be encrypted using FPE to
+            preserve format for downstream systems, or tokenized for storage.
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: FPE-FF3-1
+          x-pii-notes: "IBAN / SortCodeAccountNumber. Consider tokenization for storage; FPE for transit."
+        Name:
+          type: string
+          maxLength: 70
+          description: |
+            ISO 20022: Account/Name (AccountNameType).
+            The name registered on the account — Confirmation of Payee (CoP) field.
+            PII: Direct identifier for natural persons.
+          x-pii: true
+          x-pii-category: DIRECT_IDENTIFIER
+          x-pii-encrypt-algo: AES-256-GCM
+        SecondaryIdentification:
+          type: string
+          maxLength: 34
+          description: |
+            ISO 20022: Account/Proxy. Secondary identifier e.g. roll number for building societies.
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: AES-256-GCM
+
+    OBPartyIdentification43:
+      description: |
+        ISO 20022: PartyIdentification135 — represents Debtor or Creditor party.
+        Used across pain.001, pacs.008, camt.052, camt.053.
+        All sub-fields are PII. This is the most PII-dense object in the payment schema.
+      type: object
+      properties:
+        Name:
+          type: string
+          maxLength: 140
+          description: |
+            ISO 20022: Party/Name.
+            Full legal name of the individual or entity.
+            DIRECT_IDENTIFIER — always encrypt.
+          x-pii: true
+          x-pii-category: DIRECT_IDENTIFIER
+          x-pii-encrypt-algo: AES-256-GCM
+          x-pii-notes: "Natural person full name. Encrypt before storage. Mask in logs."
+        PostalAddress:
+          $ref: '#/components/schemas/OBPostalAddress6'
+        Identification:
+          $ref: '#/components/schemas/OBPartyPrivateIdentification'
+        ContactDetails:
+          $ref: '#/components/schemas/OBPartyContactDetails'
+
+    OBPostalAddress6:
+      description: |
+        ISO 20022: PostalAddress24 — used across all party objects.
+        Full address is CONTACT PII under GDPR Art. 4(1).
+      type: object
+      properties:
+        AddressType:
+          type: string
+          description: "ISO 20022: PostalAddress/AddressType"
+          enum: [BIZZ, DLVY, MLTO, PBOX, ADDR, HOME]
+        Department:
+          type: string
+          maxLength: 70
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        SubDepartment:
+          type: string
+          maxLength: 70
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        StreetName:
+          type: string
+          maxLength: 70
+          description: "ISO 20022: PostalAddress/StreetName"
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        BuildingNumber:
+          type: string
+          maxLength: 16
+          description: "ISO 20022: PostalAddress/BuildingNumber"
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        BuildingName:
+          type: string
+          maxLength: 35
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        Floor:
+          type: string
+          maxLength: 70
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        PostBox:
+          type: string
+          maxLength: 16
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        Room:
+          type: string
+          maxLength: 70
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        PostCode:
+          type: string
+          maxLength: 16
+          description: |
+            ISO 20022: PostalAddress/PostCode.
+            QUASI_IDENTIFIER — combined with name/DOB can uniquely identify a person.
+          x-pii: true
+          x-pii-category: QUASI_IDENTIFIER
+          x-pii-encrypt-algo: AES-256-GCM
+        TownName:
+          type: string
+          maxLength: 35
+          description: "ISO 20022: PostalAddress/TownName"
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        TownLocationName:
+          type: string
+          maxLength: 35
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        DistrictName:
+          type: string
+          maxLength: 35
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        CountrySubDivision:
+          type: string
+          maxLength: 35
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        Country:
+          type: string
+          pattern: '^[A-Z]{2,2}$'
+          description: "ISO 3166-1 alpha-2. Not PII alone but combined with address fields."
+        AddressLine:
+          type: array
+          items:
+            type: string
+            maxLength: 70
+            x-pii: true
+            x-pii-category: CONTACT
+            x-pii-encrypt-algo: AES-256-GCM
+          maxItems: 7
+
+    OBPartyPrivateIdentification:
+      description: |
+        ISO 20022: PersonIdentification13 — national ID, passport, tax ID, etc.
+        All fields are HIGH RISK PII — DIRECT_IDENTIFIER category.
+      type: object
+      properties:
+        DateAndPlaceOfBirth:
+          type: object
+          description: "ISO 20022: DateAndPlaceOfBirth1"
+          properties:
+            BirthDate:
+              type: string
+              format: date
+              description: "Date of birth. QUASI_IDENTIFIER — high risk when combined with name."
+              x-pii: true
+              x-pii-category: QUASI_IDENTIFIER
+              x-pii-encrypt-algo: AES-256-GCM
+            ProvinceOfBirth:
+              type: string
+              maxLength: 35
+              x-pii: true
+              x-pii-category: QUASI_IDENTIFIER
+              x-pii-encrypt-algo: AES-256-GCM
+            CityOfBirth:
+              type: string
+              maxLength: 35
+              x-pii: true
+              x-pii-category: QUASI_IDENTIFIER
+              x-pii-encrypt-algo: AES-256-GCM
+            CountryOfBirth:
+              type: string
+              pattern: '^[A-Z]{2,2}$'
+              x-pii: true
+              x-pii-category: QUASI_IDENTIFIER
+              x-pii-encrypt-algo: AES-256-GCM
+        Other:
+          type: object
+          description: "Other person identification — national ID, passport, tax ID."
+          properties:
+            Identification:
+              type: string
+              maxLength: 35
+              description: "National ID / Passport number / Tax ID. HIGHEST RISK PII."
+              x-pii: true
+              x-pii-category: DIRECT_IDENTIFIER
+              x-pii-encrypt-algo: AES-256-GCM
+              x-pii-notes: "Must never appear in logs. Encrypt with separate key from financial data."
+            SchemeName:
+              type: object
+              properties:
+                Code:
+                  type: string
+                  description: "e.g. NIDN (National Identity), PASSN (Passport), TAXID"
+                Proprietary:
+                  type: string
+                  maxLength: 35
+            Issuer:
+              type: string
+              maxLength: 35
+              x-pii: true
+              x-pii-category: DIRECT_IDENTIFIER
+              x-pii-encrypt-algo: AES-256-GCM
+
+    OBPartyContactDetails:
+      description: |
+        Contact details — all fields are CONTACT PII.
+        Not defined in core ISO 20022 but used in Open Banking extensions.
+      type: object
+      properties:
+        EmailAddress:
+          type: string
+          maxLength: 256
+          format: email
+          description: "Email address. CONTACT PII — also a DIRECT_IDENTIFIER in many contexts."
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+          x-pii-notes: "Hash for lookup/dedup; encrypt full value for storage."
+        PhoneNumber:
+          type: string
+          maxLength: 30
+          description: "Phone number in E.164 format. CONTACT PII."
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        MobileNumber:
+          type: string
+          maxLength: 30
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+
+    # ── PAYMENT INITIATION ────────────────────────────────────────────────────
+
+    OBDomesticPaymentInitiation4:
+      description: |
+        ISO 20022 pain.001 CreditTransferTransaction — domestic payment instruction.
+        Core data object. Contains debtor, creditor, remittance info.
+      type: object
+      required:
+        - InstructionIdentification
+        - EndToEndIdentification
+        - InstructedAmount
+        - CreditorAccount
+      properties:
+        InstructionIdentification:
+          type: string
+          maxLength: 35
+          description: |
+            ISO 20022: PaymentIdentification/InstructionIdentification.
+            Unique internal reference assigned by PISP. Not PII alone.
+        EndToEndIdentification:
+          type: string
+          maxLength: 35
+          description: |
+            ISO 20022: PaymentIdentification/EndToEndIdentification.
+            Reference shared across the payment chain. May link to PII — handle carefully.
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: FPE-FF3-1
+          x-pii-notes: "Often contains invoice refs which may be linked to person. Treat as PII."
+        LocalInstrument:
+          type: string
+          description: "ISO 20022: LocalInstrument. e.g. UK.OBIE.FPS (Faster Payments), UK.OBIE.BACS, UK.OBIE.CHAPS"
+        InstructedAmount:
+          $ref: '#/components/schemas/OBActiveOrHistoricCurrencyAndAmount'
+        DebtorAccount:
+          $ref: '#/components/schemas/OBCashAccount3'
+          description: "ISO 20022: Debtor/Account — the payer's account. PII fields within."
+        CreditorAccount:
+          $ref: '#/components/schemas/OBCashAccount3'
+          description: "ISO 20022: Creditor/Account — the payee's account. PII fields within."
+        CreditorPostalAddress:
+          $ref: '#/components/schemas/OBPostalAddress6'
+          description: "ISO 20022: Creditor/PostalAddress. PII fields within."
+        RemittanceInformation:
+          $ref: '#/components/schemas/OBRemittanceInformation2'
+        SupplementaryData:
+          type: object
+          additionalProperties: true
+          description: "ISO 20022: SupplementaryData — proprietary bank-specific fields."
+
+    OBRemittanceInformation2:
+      description: |
+        ISO 20022: RemittanceInformation16.
+        Contains Unstructured (free text) and Structured references.
+        Free text may contain names, invoice details, or other PII — treat conservatively.
+      type: object
+      properties:
+        Unstructured:
+          type: array
+          items:
+            type: string
+            maxLength: 140
+            description: "Free text payment reference. May contain PII — encrypt by default."
+            x-pii: true
+            x-pii-category: FINANCIAL
+            x-pii-encrypt-algo: AES-256-GCM
+            x-pii-notes: "Free text often contains names, account refs, or invoice IDs. Always encrypt."
+        Structured:
+          type: array
+          items:
+            $ref: '#/components/schemas/OBRemittanceInformationStructured'
+
+    OBRemittanceInformationStructured:
+      description: "ISO 20022: RemittanceInformation/Structured"
+      type: object
+      properties:
+        ReferredDocumentInformation:
+          type: array
+          items:
+            type: object
+            properties:
+              Code:
+                type: string
+                description: "Document type code (e.g. CINV — Commercial Invoice)"
+              Number:
+                type: string
+                maxLength: 35
+                description: "Document reference number. May be PII in B2C contexts."
+                x-pii: true
+                x-pii-category: FINANCIAL
+                x-pii-encrypt-algo: FPE-FF3-1
+              RelatedDate:
+                type: string
+                format: date
+        AdditionalRemittanceInformation:
+          type: string
+          maxLength: 140
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: AES-256-GCM
+        CreditorReferenceInformation:
+          type: object
+          properties:
+            Code:
+              type: string
+            Reference:
+              type: string
+              maxLength: 35
+              description: "Creditor-assigned reference (e.g. invoice/mandate number)."
+              x-pii: true
+              x-pii-category: FINANCIAL
+              x-pii-encrypt-algo: FPE-FF3-1
+
+    OBInternationalPaymentInitiation:
+      description: |
+        ISO 20022 pain.001 cross-border / pacs.008 FIToFI variant.
+        Includes full creditor agent, exchange rate information.
+        International payments carry the highest PII payload.
+      type: object
+      required:
+        - InstructionIdentification
+        - EndToEndIdentification
+        - CurrencyOfTransfer
+        - InstructedAmount
+        - CreditorAccount
+      properties:
+        InstructionIdentification:
+          type: string
+          maxLength: 35
+        EndToEndIdentification:
+          type: string
+          maxLength: 35
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: FPE-FF3-1
+        LocalInstrument:
+          type: string
+          maxLength: 35
+        InstructionPriority:
+          type: string
+          enum: [Normal, Urgent]
+        Purpose:
+          type: string
+          maxLength: 4
+          description: "ISO 20022: Purpose/Code — e.g. SALA (Salary), GOVT (Government Payment)"
+        ExtendedPurpose:
+          type: string
+          maxLength: 140
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: AES-256-GCM
+          x-pii-notes: "Extended purpose may describe relationship to payee. Encrypt."
+        ChargeBearer:
+          type: string
+          enum: [BorneByCreditor, BorneByDebtor, FollowingServiceLevel, Shared]
+        CurrencyOfTransfer:
+          type: string
+          pattern: '^[A-Z]{3,3}$'
+          description: "ISO 4217 currency code."
+        ExchangeRateInformation:
+          $ref: '#/components/schemas/OBExchangeRate1'
+        DebtorAccount:
+          $ref: '#/components/schemas/OBCashAccount3'
+        Creditor:
+          $ref: '#/components/schemas/OBPartyIdentification43'
+          description: "Full creditor party including name, address, ID. HIGH PII DENSITY."
+        CreditorAgent:
+          $ref: '#/components/schemas/OBBranchAndFinancialInstitutionIdentification6'
+        CreditorAccount:
+          $ref: '#/components/schemas/OBCashAccount3'
+        RemittanceInformation:
+          $ref: '#/components/schemas/OBRemittanceInformation2'
+
+    OBExchangeRate1:
+      description: "ISO 20022: ExchangeRate — agreed FX rate. Not PII."
+      type: object
+      properties:
+        UnitCurrency:
+          type: string
+          pattern: '^[A-Z]{3,3}$'
+        ExchangeRate:
+          type: number
+        RateType:
+          type: string
+          enum: [Agreed, Actual, Indicative]
+        ContractIdentification:
+          type: string
+          maxLength: 256
+          description: "FX contract reference. May be tied to a person in B2C FX context."
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: FPE-FF3-1
+        ExpirationDateTime:
+          type: string
+          format: date-time
+
+    OBActiveOrHistoricCurrencyAndAmount:
+      description: "ISO 20022: ActiveOrHistoricCurrencyAndAmount. Amount + currency. Not PII."
+      type: object
+      required:
+        - Amount
+        - Currency
+      properties:
+        Amount:
+          type: string
+          pattern: '^\d{1,13}$|^\d{1,13}\.\d{1,5}$'
+          description: "Payment amount as a decimal string."
+        Currency:
+          type: string
+          pattern: '^[A-Z]{3,3}$'
+
+    # ── ACCOUNT INFORMATION ───────────────────────────────────────────────────
+
+    OBAccount6:
+      description: |
+        ISO 20022 camt.052/053 — Account summary. Contains account identifier and holder name.
+      type: object
+      required:
+        - AccountId
+        - Currency
+        - AccountType
+        - AccountSubType
+      properties:
+        AccountId:
+          type: string
+          maxLength: 40
+          description: "Internal ASPSP account ID. Not globally unique PII but sensitive."
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: TOKENIZE
+        Status:
+          type: string
+          enum: [Enabled, Disabled, Deleted, ProForma, Pending]
+        Currency:
+          type: string
+          pattern: '^[A-Z]{3,3}$'
+        AccountType:
+          type: string
+          enum: [Business, Personal]
+        AccountSubType:
+          type: string
+          enum: [ChargeCard, CreditCard, CurrentAccount, EMoney, Loan, Mortgage, PrePaidCard, Savings]
+        Description:
+          type: string
+          maxLength: 35
+          description: "Account nickname/description. May contain PII if user-defined."
+          x-pii: true
+          x-pii-category: DIRECT_IDENTIFIER
+          x-pii-encrypt-algo: AES-256-GCM
+        Nickname:
+          type: string
+          maxLength: 70
+          description: "User-assigned account nickname. PII — user-identifiable label."
+          x-pii: true
+          x-pii-category: DIRECT_IDENTIFIER
+          x-pii-encrypt-algo: AES-256-GCM
+        OpeningDate:
+          type: string
+          format: date
+        MaturityDate:
+          type: string
+          format: date
+        SwitchStatus:
+          type: string
+        Account:
+          type: array
+          items:
+            $ref: '#/components/schemas/OBCashAccount3'
+          description: "Array of account identifiers (IBAN, SortCode+AcctNo). All PII."
+        Servicer:
+          $ref: '#/components/schemas/OBBranchAndFinancialInstitutionIdentification6'
+
+    OBTransaction6:
+      description: |
+        ISO 20022 camt.053 — Transaction record. Contains counterparty details.
+        Transaction entries contain debtor/creditor information — PII fields throughout.
+      type: object
+      required:
+        - AccountId
+        - CreditDebitIndicator
+        - Status
+        - BookingDateTime
+        - Amount
+      properties:
+        AccountId:
+          type: string
+          maxLength: 40
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: TOKENIZE
+        TransactionId:
+          type: string
+          maxLength: 210
+          description: "Transaction reference ID. Internal — not PII directly."
+        TransactionReference:
+          type: string
+          maxLength: 35
+          description: "ISO 20022: EntryDetails/TransactionDetails/References/EndToEndId"
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: FPE-FF3-1
+        StatementReference:
+          type: array
+          items:
+            type: string
+            maxLength: 35
+        CreditDebitIndicator:
+          type: string
+          enum: [Credit, Debit]
+        Status:
+          type: string
+          enum: [Booked, Pending, Rejected]
+        BookingDateTime:
+          type: string
+          format: date-time
+          description: "ISO 20022: EntryDetails/BookingDate. Not PII."
+        ValueDateTime:
+          type: string
+          format: date-time
+        TransactionInformation:
+          type: string
+          maxLength: 500
+          description: |
+            ISO 20022: EntryDetails/TransactionDetails/RemittanceInformation/Unstructured.
+            Free text narrative — often contains names or references. Encrypt by default.
+          x-pii: true
+          x-pii-category: FINANCIAL
+          x-pii-encrypt-algo: AES-256-GCM
+          x-pii-notes: "Free text narrative may contain payee names or personal references."
+        AddressLine:
+          type: string
+          maxLength: 70
+          x-pii: true
+          x-pii-category: CONTACT
+          x-pii-encrypt-algo: AES-256-GCM
+        Amount:
+          $ref: '#/components/schemas/OBActiveOrHistoricCurrencyAndAmount'
+        ChargeAmount:
+          $ref: '#/components/schemas/OBActiveOrHistoricCurrencyAndAmount'
+        CurrencyExchange:
+          type: object
+          properties:
+            SourceCurrency:
+              type: string
+            TargetCurrency:
+              type: string
+            UnitCurrency:
+              type: string
+            ExchangeRate:
+              type: number
+            ContractIdentification:
+              type: string
+              maxLength: 35
+              x-pii: true
+              x-pii-category: FINANCIAL
+              x-pii-encrypt-algo: FPE-FF3-1
+            QuotationDate:
+              type: string
+              format: date-time
+        BankTransactionCode:
+          type: object
+          description: "ISO 20022: BankTransactionCode"
+          properties:
+            Code:
+              type: string
+            SubCode:
+              type: string
+        ProprietaryBankTransactionCode:
+          type: object
+          properties:
+            Code:
+              type: string
+              maxLength: 35
+            Issuer:
+              type: string
+              maxLength: 35
+        Balance:
+          type: object
+          description: "Running balance at time of transaction."
+          properties:
+            Amount:
+              $ref: '#/components/schemas/OBActiveOrHistoricCurrencyAndAmount'
+            CreditDebitIndicator:
+              type: string
+              enum: [Credit, Debit]
+            Type:
+              type: string
+        MerchantDetails:
+          type: object
+          description: "Merchant information for card transactions."
+          properties:
+            MerchantName:
+              type: string
+              maxLength: 350
+              description: "Merchant name. Not personal PII but may be sensitive (e.g. medical, legal)."
+            MerchantCategoryCode:
+              type: string
+              maxLength: 4
+        CreditorAgent:
+          $ref: '#/components/schemas/OBBranchAndFinancialInstitutionIdentification6'
+        CreditorAccount:
+          $ref: '#/components/schemas/OBCashAccount3'
+          description: "Payee account — FINANCIAL PII fields within."
+        DebtorAgent:
+          $ref: '#/components/schemas/OBBranchAndFinancialInstitutionIdentification6'
+        DebtorAccount:
+          $ref: '#/components/schemas/OBCashAccount3'
+          description: "Payer account — FINANCIAL PII fields within."
+        CardInstrument:
+          type: object
+          description: "Card payment instrument details."
+          properties:
+            CardSchemeName:
+              type: string
+              enum: [AmericanExpress, Diners, Discover, MasterCard, VISA]
+            AuthorisationType:
+              type: string
+              enum: [ConsumerDevice, Contactless, None, PIN]
+            Name:
+              type: string
+              maxLength: 70
+              description: "Name on card. DIRECT_IDENTIFIER PII."
+              x-pii: true
+              x-pii-category: DIRECT_IDENTIFIER
+              x-pii-encrypt-algo: AES-256-GCM
+            Identification:
+              type: string
+              maxLength: 34
+              description: "Masked PAN or last 4 digits. Treat as FINANCIAL PII."
+              x-pii: true
+              x-pii-category: FINANCIAL
+              x-pii-encrypt-algo: TOKENIZE
+              x-pii-notes: "Even masked PAN is PCI-DSS regulated. Never store full PAN."
+        SupplementaryData:
+          type: object
+          additionalProperties: true
+
+    # ── CONSENT WRAPPERS ──────────────────────────────────────────────────────
+
+    OBWriteDomesticConsent4:
+      type: object
+      required: [Data, Risk]
+      properties:
+        Data:
+          type: object
+          required: [Initiation]
+          properties:
+            ReadRefundAccount:
+              type: string
+              enum: [Yes, No]
+            Initiation:
+              $ref: '#/components/schemas/OBDomesticPaymentInitiation4'
+            Authorisation:
+              type: object
+              properties:
+                AuthorisationType:
+                  type: string
+                  enum: [Any, Single]
+                CompletionDateTime:
+                  type: string
+                  format: date-time
+            SCASupportData:
+              type: object
+              properties:
+                RequestedSCAExemptionType:
+                  type: string
+                  enum: [BillPayment, ContactlessTravel, EcommerceGoods, EcommerceServices, Kiosk, Parking, PartyToParty]
+                AppliedAuthenticationApproach:
+                  type: string
+                  enum: [CA, SCA]
+                ReferencePaymentOrderId:
+                  type: string
+                  maxLength: 40
+        Risk:
+          $ref: '#/components/schemas/OBRisk1'
+
+    OBWriteDomesticConsentResponse5:
+      type: object
+      properties:
+        Data:
+          type: object
+          properties:
+            ConsentId:
+              type: string
+              maxLength: 128
+              description: "Consent identifier — links to PII data. Treat as sensitive reference."
+              x-pii: true
+              x-pii-category: FINANCIAL
+              x-pii-encrypt-algo: TOKENIZE
+            CreationDateTime:
+              type: string
+              format: date-time
+            Status:
+              type: string
+              enum: [Authorised, AwaitingAuthorisation, Consumed, Rejected]
+            StatusUpdateDateTime:
+              type: string
+              format: date-time
+            ReadRefundAccount:
+              type: string
+              enum: [Yes, No]
+            CutOffDateTime:
+              type: string
+              format: date-time
+            ExpectedExecutionDateTime:
+              type: string
+              format: date-time
+            ExpectedSettlementDateTime:
+              type: string
+              format: date-time
+            Charges:
+              type: array
+              items:
+                $ref: '#/components/schemas/OBCharge2'
+            Initiation:
+              $ref: '#/components/schemas/OBDomesticPaymentInitiation4'
+            Authorisation:
+              type: object
+              properties:
+                AuthorisationType:
+                  type: string
+                CompletionDateTime:
+                  type: string
+                  format: date-time
+            SCASupportData:
+              type: object
+        Risk:
+          $ref: '#/components/schemas/OBRisk1'
+        Links:
+          $ref: '#/components/schemas/Links'
+        Meta:
+          $ref: '#/components/schemas/Meta'
+
+    OBWriteDomestic2:
+      type: object
+      required: [Data, Risk]
+      properties:
+        Data:
+          type: object
+          required: [ConsentId, Initiation]
+          properties:
+            ConsentId:
+              type: string
+              maxLength: 128
+            Initiation:
+              $ref: '#/components/schemas/OBDomesticPaymentInitiation4'
+        Risk:
+          $ref: '#/components/schemas/OBRisk1'
+
+    OBWriteDomesticResponse5:
+      type: object
+      properties:
+        Data:
+          type: object
+          properties:
+            DomesticPaymentId:
+              type: string
+              maxLength: 40
+            ConsentId:
+              type: string
+              maxLength: 128
+              x-pii: true
+              x-pii-category: FINANCIAL
+              x-pii-encrypt-algo: TOKENIZE
+            CreationDateTime:
+              type: string
+              format: date-time
+            Status:
+              type: string
+              enum: [AcceptedCreditSettlementCompleted, AcceptedSettlementCompleted, AcceptedSettlementInProcess, AcceptedWithoutPosting, AcceptedCustomerProfile, AcceptedFundsChecked, AcceptedTechnicalValidation, Pending, Rejected]
+            StatusUpdateDateTime:
+              type: string
+              format: date-time
+            Charges:
+              type: array
+              items:
+                $ref: '#/components/schemas/OBCharge2'
+            Initiation:
+              $ref: '#/components/schemas/OBDomesticPaymentInitiation4'
+            MultiAuthorisation:
+              type: object
+              properties:
+                Status:
+                  type: string
+                NumberRequired:
+                  type: integer
+                NumberReceived:
+                  type: integer
+                LastUpdateDateTime:
+                  type: string
+                  format: date-time
+                ExpirationDateTime:
+                  type: string
+                  format: date-time
+            Debtor:
+              $ref: '#/components/schemas/OBCashAccount3'
+              description: "Debtor account details in response. PII — return only if consent allows."
+        Risk:
+          $ref: '#/components/schemas/OBRisk1'
+        Links:
+          $ref: '#/components/schemas/Links'
+        Meta:
+          $ref: '#/components/schemas/Meta'
+
+    OBWriteInternationalConsent5:
+      type: object
+      required: [Data, Risk]
+      properties:
+        Data:
+          type: object
+          required: [Initiation]
+          properties:
+            ReadRefundAccount:
+              type: string
+              enum: [Yes, No]
+            Initiation:
+              $ref: '#/components/schemas/OBInternationalPaymentInitiation'
+            Authorisation:
+              type: object
+            SCASupportData:
+              type: object
+        Risk:
+          $ref: '#/components/schemas/OBRisk1'
+
+    OBWriteInternationalConsentResponse6:
+      type: object
+      properties:
+        Data:
+          type: object
+          properties:
+            ConsentId:
+              type: string
+              maxLength: 128
+              x-pii: true
+              x-pii-category: FINANCIAL
+              x-pii-encrypt-algo: TOKENIZE
+            CreationDateTime:
+              type: string
+              format: date-time
+            Status:
+              type: string
+            Initiation:
+              $ref: '#/components/schemas/OBInternationalPaymentInitiation'
+            ExchangeRateInformation:
+              $ref: '#/components/schemas/OBExchangeRate1'
+        Risk:
+          $ref: '#/components/schemas/OBRisk1'
+        Links:
+          $ref: '#/components/schemas/Links'
+        Meta:
+          $ref: '#/components/schemas/Meta'
+
+    OBReadAccount6:
+      type: object
+      properties:
+        Data:
+          type: object
+          properties:
+            Account:
+              type: array
+              items:
+                $ref: '#/components/schemas/OBAccount6'
+        Links:
+          $ref: '#/components/schemas/Links'
+        Meta:
+          $ref: '#/components/schemas/Meta'
+
+    OBReadTransaction6:
+      type: object
+      properties:
+        Data:
+          type: object
+          properties:
+            Transaction:
+              type: array
+              items:
+                $ref: '#/components/schemas/OBTransaction6'
+        Links:
+          $ref: '#/components/schemas/Links'
+        Meta:
+          $ref: '#/components/schemas/Meta'
+
+    # ── SHARED COMPONENTS ─────────────────────────────────────────────────────
+
+    OBRisk1:
+      description: |
+        Risk payload used in payment requests. Contains merchant/delivery data.
+        Delivery address is CONTACT PII.
+      type: object
+      properties:
+        PaymentContextCode:
+          type: string
+          enum: [BillPayment, EcommerceGoods, EcommerceServices, Other, PartyToParty]
+        MerchantCategoryCode:
+          type: string
+          maxLength: 4
+        MerchantCustomerIdentification:
+          type: string
+          maxLength: 70
+          description: "Merchant-assigned customer ID. May be PII if it maps to a person."
+          x-pii: true
+          x-pii-category: DIRECT_IDENTIFIER
+          x-pii-encrypt-algo: TOKENIZE
+        ContractPresentIndicator:
+          type: boolean
+        BeneficiaryPrepopulatedIndicator:
+          type: boolean
+        PaymentPurposeCode:
+          type: string
+          maxLength: 4
+        BeneficiaryAccountType:
+          type: string
+          enum: [Business, Personal]
+        DeliveryAddress:
+          description: "Delivery address for goods. CONTACT PII."
+          type: object
+          properties:
+            AddressLine:
+              type: array
+              items:
+                type: string
+                maxLength: 70
+                x-pii: true
+                x-pii-category: CONTACT
+                x-pii-encrypt-algo: AES-256-GCM
+            StreetName:
+              type: string
+              maxLength: 70
+              x-pii: true
+              x-pii-category: CONTACT
+              x-pii-encrypt-algo: AES-256-GCM
+            BuildingNumber:
+              type: string
+              maxLength: 16
+              x-pii: true
+              x-pii-category: CONTACT
+              x-pii-encrypt-algo: AES-256-GCM
+            PostCode:
+              type: string
+              maxLength: 16
+              x-pii: true
+              x-pii-category: QUASI_IDENTIFIER
+              x-pii-encrypt-algo: AES-256-GCM
+            TownName:
+              type: string
+              maxLength: 35
+              x-pii: true
+              x-pii-category: CONTACT
+              x-pii-encrypt-algo: AES-256-GCM
+            CountrySubDivision:
+              type: string
+              maxLength: 35
+              x-pii: true
+              x-pii-category: CONTACT
+              x-pii-encrypt-algo: AES-256-GCM
+            Country:
+              type: string
+              pattern: '^[A-Z]{2,2}$'
+
+    OBCharge2:
+      type: object
+      properties:
+        ChargeBearer:
+          type: string
+          enum: [BorneByCreditor, BorneByDebtor, FollowingServiceLevel, Shared]
+        Type:
+          type: string
+        Amount:
+          $ref: '#/components/schemas/OBActiveOrHistoricCurrencyAndAmount'
+
+    Links:
+      type: object
+      properties:
+        Self:
+          type: string
+          format: uri
+        First:
+          type: string
+          format: uri
+        Prev:
+          type: string
+          format: uri
+        Next:
+          type: string
+          format: uri
+        Last:
+          type: string
+          format: uri
+
+    Meta:
+      type: object
+      properties:
+        TotalPages:
+          type: integer
+        FirstAvailableDateTime:
+          type: string
+          format: date-time
+        LastAvailableDateTime:
+          type: string
+          format: date-time
+
+    OBErrorResponse1:
+      type: object
+      properties:
+        Code:
+          type: string
+          maxLength: 40
+        Id:
+          type: string
+          maxLength: 40
+        Message:
+          type: string
+          maxLength: 500
+        Errors:
+          type: array
+          items:
+            type: object
+            properties:
+              ErrorCode:
+                type: string
+              Message:
+                type: string
+              Path:
+                type: string
+              Url:
+                type: string
