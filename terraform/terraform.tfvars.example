@@ -1,0 +1,94 @@
+# ── terraform.tfvars.example ──────────────────────────────────────────────────
+# Copy this file to terraform.tfvars and fill in the values before running
+# `terraform plan` / `terraform apply`.
+#
+# Never commit terraform.tfvars to version control — it contains account IDs
+# and other environment-specific values.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Core identity ─────────────────────────────────────────────────────────────
+aws_region  = "us-east-1"
+environment = "dev"          # dev | staging | prod
+account_id  = "123456789012" # 12-digit AWS account ID
+
+# ── EKS ───────────────────────────────────────────────────────────────────────
+cluster_name    = "nitro-enc-svc-dev"
+cluster_version = "1.31"
+
+# Restrict the public EKS API endpoint to your corporate CIDR (recommended for prod).
+# Set to ["0.0.0.0/0"] only for initial setup / dev environments.
+public_access_cidrs = ["10.0.0.0/8"]
+
+# ── VPC ───────────────────────────────────────────────────────────────────────
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+
+# ── Node groups ───────────────────────────────────────────────────────────────
+general_instance_types = ["m5.large"]
+general_desired_size   = 2
+general_min_size       = 1
+general_max_size       = 4
+
+# Instances with Nitro Enclave support: c5, c5n, c5d, m5, m5n, r5, r5n, etc.
+# Minimum: 4 vCPU / 8 GiB RAM to allow headroom after reserving enclave resources.
+nitro_instance_types = ["c5.xlarge"]
+nitro_desired_size   = 2
+nitro_min_size       = 1
+nitro_max_size       = 4
+
+# ── Enclave runtime ───────────────────────────────────────────────────────────
+# Reserve enough memory for the enclave workload. Remaining host memory is
+# available to the parent instance and other pods.
+enclave_memory_mb = 2048
+enclave_cpu_count = 2
+enclave_cid       = 16  # vsock CID assigned to the enclave (default: 16)
+
+# Vsock CID of the aws-vsock-proxy running on the parent EC2 instance.
+# The proxy forwards KMS / Secrets Manager / S3 calls from inside the enclave.
+vsock_proxy_cid = "3"
+
+# ── Attestation gate ──────────────────────────────────────────────────────────
+# PCR0 workflow:
+#
+#   Step 1 — First apply:
+#     Leave kms_enclave_pcr0 = "" (empty). The KMS key policy will NOT include
+#     a Decrypt statement, so the enclave cannot yet decrypt the DEK. This is
+#     intentional — you need to build the EIF first to get the PCR0 hash.
+#
+#   Step 2 — Run CodePipeline:
+#     Trigger the pipeline. CodeBuild builds the EIF and writes PCR0 to
+#     build-summary.json in the artifacts bucket. Review the artifact.
+#
+#   Step 3 — Second apply:
+#     Set kms_enclave_pcr0 to the SHA-384 hex string from build-summary.json
+#     and re-run `terraform apply`. The KMS key policy will now gate Decrypt
+#     on the exact enclave image measurement.
+#
+#   Step 4 — Approve the CodePipeline manual gate.
+#
+kms_enclave_pcr0 = ""
+# kms_enclave_pcr0 = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+# ── Observability ─────────────────────────────────────────────────────────────
+# OTLP/gRPC endpoint of the OTEL Collector on the parent EC2.
+# Typically a vsock address: vsock://<CID>:<PORT>
+otel_otlp_endpoint = "http://localhost:4317"
+
+# ── Source / CI-CD ────────────────────────────────────────────────────────────
+# Create the CodeStar connection once in the AWS Console (Developer Tools →
+# Connections), then paste the ARN here.
+codestar_connection_arn = "arn:aws:codestar-connections:us-east-1:123456789012:connection/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# GitHub "org/repo" identifier.
+source_repo_id     = "my-org/nitro-enc-svc"
+source_repo_branch = "main"
+
+# ── Service configuration ─────────────────────────────────────────────────────
+# These are passed as CodeBuild environment variables and baked into the EIF.
+log_level                    = "info"
+s3_prefix                    = "schemas/"
+schema_header_name           = "X-Schema-Name"
+dek_rotation_interval_secs   = 3600
+schema_refresh_interval_secs = 300
+vsock_proxy_port             = 8000
+tls_port                     = 443

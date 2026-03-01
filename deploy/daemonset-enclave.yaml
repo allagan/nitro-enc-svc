@@ -1,3 +1,7 @@
+# Apply namespace.yaml and rbac.yaml before this manifest:
+#   kubectl apply -f deploy/namespace.yaml
+#   kubectl apply -f deploy/rbac.yaml
+#   kubectl apply -f deploy/daemonset-enclave.yaml
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -24,6 +28,7 @@ spec:
         aws.amazon.com/nitro-enclaves: "true"
       tolerations:
         - operator: Exists
+      serviceAccountName: nitro-enclave-runner
       containers:
         - name: enclave-runner
           # Image built by CodeBuild and pushed to ECR.

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nitro-enc-svc
+  labels:
+    app.kubernetes.io/name: nitro-enc-svc
+    # Pod Security Admission (K8s 1.25+): the runner container requires privileged
+    # access to /dev/nitro_enclaves to launch and manage Nitro Enclaves via nitro-cli.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/audit: privileged

@@ -1,0 +1,23 @@
+# ServiceAccount for the nitro-enclave DaemonSet runner pods.
+#
+# The runner container does not call the Kubernetes API, so no Role or
+# RoleBinding is required. The ServiceAccount provides a stable identity
+# for audit logging and can be annotated with an IAM role ARN for IRSA if
+# direct AWS API access from the runner itself is ever needed.
+#
+# AWS permissions for the enclave (KMS, Secrets Manager, S3) are granted via
+# the EC2 node IAM instance profile — the enclave communicates through the
+# parent EC2's aws-vsock-proxy, which runs as a host process using the node
+# instance role. No IRSA annotation is needed for the enclave's AWS access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nitro-enclave-runner
+  namespace: nitro-enc-svc
+  labels:
+    app: nitro-enclave
+  annotations:
+    # Uncomment and set to enable IRSA if the runner ever needs direct AWS API access:
+    # eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/nitro-enclave-runner-role
+# The runner does not call the Kubernetes API — disable the automatic token mount.
+automountServiceAccountToken: false
