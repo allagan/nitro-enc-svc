@@ -132,24 +132,22 @@ phases:
 
       # -----------------------------------------------------------------------
       # 3. Build and push the vsock-proxy sidecar image.
+      #    ECR repos use immutable tags — only push the versioned tag.
       # -----------------------------------------------------------------------
       - |
         docker build -f Dockerfile.vsock-proxy \
-          -t "${ECR_REGISTRY}/${ECR_REPO_PROXY}:${IMAGE_TAG}" \
-          -t "${ECR_REGISTRY}/${ECR_REPO_PROXY}:latest" .
+          -t "${ECR_REGISTRY}/${ECR_REPO_PROXY}:${IMAGE_TAG}" .
         docker push "${ECR_REGISTRY}/${ECR_REPO_PROXY}:${IMAGE_TAG}"
-        docker push "${ECR_REGISTRY}/${ECR_REPO_PROXY}:latest"
 
       # -----------------------------------------------------------------------
       # 4. Build and push the runner image (EIF baked in).
       #    Dockerfile.runner COPYs enclave/nitro-enc-svc.eif built in step 2.
+      #    ECR repos use immutable tags — only push the versioned tag.
       # -----------------------------------------------------------------------
       - |
         docker build -f Dockerfile.runner \
-          -t "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:${IMAGE_TAG}" \
-          -t "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:latest" .
+          -t "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:${IMAGE_TAG}" .
         docker push "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:${IMAGE_TAG}"
-        docker push "${ECR_REGISTRY}/${ECR_REPO_RUNNER}:latest"
 
   post_build:
     commands:
