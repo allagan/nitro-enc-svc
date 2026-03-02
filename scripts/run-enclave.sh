@@ -60,7 +60,9 @@ RUN_OUTPUT=$(nitro-cli run-enclave \
 
 echo "INFO: nitro-cli run-enclave output: ${RUN_OUTPUT}"
 
-ENCLAVE_ID=$(echo "${RUN_OUTPUT}" | jq -r '.EnclaveID // empty')
+# nitro-cli prefixes the JSON with status lines ("Start allocating memory...",
+# "Started enclave with ...") — extract from the first '{' to end of output.
+ENCLAVE_ID=$(echo "${RUN_OUTPUT}" | awk '/^\{/,0' | jq -r '.EnclaveID // empty')
 
 if [[ -z "${ENCLAVE_ID}" ]]; then
     echo "ERROR: could not extract EnclaveID from nitro-cli output" >&2

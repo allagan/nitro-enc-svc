@@ -34,19 +34,39 @@ spec:
           # Image built by CodeBuild and pushed to ECR.
           # Replace <ECR_REGISTRY> and <IMAGE_TAG> with the values from
           # enclave/build-summary.json after each CodeBuild run.
-          image: <ECR_REGISTRY>/nitro-enc-svc/runner:<IMAGE_TAG>
+          image: 394582308905.dkr.ecr.us-east-2.amazonaws.com/nitro-enc-svc/dev/runner:bf73260
+          # TODO: remove this command override once the run-enclave.sh fix is
+          # baked into the ECR image via a new CodeBuild run. The override patches
+          # the jq parse to strip nitro-cli's non-JSON prefix lines.
+          command:
+            - bash
+            - -c
+            - >-
+              sed -i
+              's/jq -r .EnclaveID/awk \x27\/^{\/,0\x27 | jq -r .EnclaveID/'
+              /usr/local/bin/run-enclave.sh;
+              exec /usr/local/bin/run-enclave.sh
           securityContext:
             privileged: true   # Required: nitro-cli must access /dev/nitro_enclaves
           # The runner container is a thin management shell. The enclave itself
           # uses memory and CPU allocated from the host Nitro Enclaves allocator
           # (configured in /etc/nitro_enclaves/allocator.yaml), not from these limits.
+          # hugepages-1Gi MUST be declared so Kubernetes sets the hugetlb cgroup
+          # limit to a non-zero value. Without this, kernel 5.7+ sets
+          # hugetlb.1GB.rsvd.limit_in_bytes=0 which causes mmap(MAP_HUGE_1GB)
+          # to fail with ENOMEM inside the container, even though the host has
+          # hugepages reserved. The actual enclave memory (1024 MiB) is allocated
+          # from the nitro-enclaves-allocator pool, not from the K8s hugepage
+          # resource, but the limit must be >= ENCLAVE_MEMORY_MB for mmap to work.
           resources:
             requests:
               cpu: "100m"
               memory: "64Mi"
+              hugepages-1Gi: "1Gi"
             limits:
               cpu: "500m"
-              memory: "256Mi"
+              memory: "2Gi"
+              hugepages-1Gi: "1Gi"
           volumeMounts:
             - name: nitro-device
               mountPath: /dev/nitro_enclaves
@@ -54,7 +74,7 @@ spec:
             # Memory (MB) to allocate to the enclave from the Nitro allocator.
             # Must be pre-reserved in /etc/nitro_enclaves/allocator.yaml on the host.
             - name: ENCLAVE_MEMORY_MB
-              value: "2048"
+              value: "1024"
             # vCPUs to allocate to the enclave. Same pre-reservation requirement.
             - name: ENCLAVE_CPU_COUNT
               value: "2"
