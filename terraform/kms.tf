@@ -34,23 +34,21 @@ resource "aws_kms_key" "enclave_dek" {
           Resource = "*"
         },
       ],
-      # Attestation-gated Decrypt — only added when PCR0 is provided
-      var.kms_enclave_pcr0 != "" ? [
+      # DEV: standard Decrypt allowed from the enclave node IAM role.
+      # TODO: Once NSM attested decrypt is implemented in dek/mod.rs, change
+      # this back to a RecipientAttestation:PCR0 condition so that only a
+      # genuine enclave with the correct image measurement can decrypt the DEK.
+      [
         {
-          Sid    = "AllowEnclaveDecryptWithAttestation"
+          Sid    = "AllowEnclaveDecrypt"
           Effect = "Allow"
           Principal = {
             AWS = aws_iam_role.enclave_node.arn
           }
           Action   = ["kms:Decrypt", "kms:DescribeKey"]
           Resource = "*"
-          Condition = {
-            StringEqualsIgnoreCase = {
-              "kms:RecipientAttestation:PCR0" = var.kms_enclave_pcr0
-            }
-          }
         }
-      ] : []
+      ]
     )
   })
 

@@ -31,19 +31,9 @@ spec:
       serviceAccountName: nitro-enclave-runner
       containers:
         - name: enclave-runner
-          # Image built by CodeBuild and pushed to ECR.
-          # Replace <ECR_REGISTRY> and <IMAGE_TAG> with the values from
-          # enclave/build-summary.json after each CodeBuild run.
-          image: 394582308905.dkr.ecr.us-east-2.amazonaws.com/nitro-enc-svc/dev/runner:dfc4bcc
-          # TODO: remove debug-mode override once vsock proxy is wired up
-          command:
-            - bash
-            - -c
-            - >-
-              sed -i
-              's/--enclave-cid "\${ENCLAVE_CID}"/--enclave-cid "\${ENCLAVE_CID}" --debug-mode/'
-              /usr/local/bin/run-enclave.sh;
-              exec /usr/local/bin/run-enclave.sh
+          # Image built by CodeBuild — update IMAGE_TAG to the 7-char git SHA
+          # shown in enclave/build-summary.json after each CodeBuild run.
+          image: 394582308905.dkr.ecr.us-east-2.amazonaws.com/nitro-enc-svc/dev/runner:IMAGE_TAG
           securityContext:
             privileged: true   # Required: nitro-cli must access /dev/nitro_enclaves
           # The runner container is a thin management shell. The enclave itself
