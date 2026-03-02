@@ -84,11 +84,27 @@ RUN cargo build --release --locked -p enclave
 # ---------------------------------------------------------------------------
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
 
-# Install ca-certificates so the enclave can verify TLS to AWS endpoints
-# reached through the vsock proxy.
-RUN dnf install -y ca-certificates shadow-utils \
+# Install runtime dependencies:
+#   ca-certificates — TLS verification for AWS API calls via vsock proxy
+#   openssl         — generates the dev self-signed cert below
+#   shadow-utils    — provides useradd
+#
+# DEV NOTE: A self-signed TLS cert is generated here so the enclave can start
+# without ACM for Nitro Enclaves.  For production, remove the openssl install
+# and the cert-generation block below; the ACM for Nitro Enclaves agent on the
+# parent EC2 will write the real cert + key to /run/acm/ over vsock before the
+# enclave process reads them.
+RUN dnf install -y ca-certificates openssl shadow-utils \
     && dnf clean all \
-    && useradd --system --no-create-home --shell /sbin/nologin enclave-svc
+    && useradd --system --no-create-home --shell /sbin/nologin enclave-svc \
+    && mkdir -p /run/acm \
+    && openssl req -x509 -newkey rsa:2048 -sha256 \
+         -keyout /run/acm/tls.key \
+         -out /run/acm/tls.crt \
+         -days 3650 -nodes \
+         -subj '/CN=nitro-enc-svc.local' \
+    && chown enclave-svc:enclave-svc /run/acm/tls.key /run/acm/tls.crt \
+    && chmod 400 /run/acm/tls.key /run/acm/tls.crt
 
 COPY --from=builder /build/target/release/enclave /usr/local/bin/enclave
 
@@ -120,7 +136,9 @@ ARG DEK_ROTATION_INTERVAL_SECS=3600
 ARG SCHEMA_REFRESH_INTERVAL_SECS=300
 ARG VSOCK_PROXY_PORT=8000
 ARG TLS_PORT=443
-# Paths where the ACM for Nitro Enclaves integration writes the TLS cert and key.
+# Paths to the TLS cert and key.  In dev, these are the self-signed files
+# generated above.  In production, override to the paths where the ACM for
+# Nitro Enclaves agent deposits the real certificate and private key.
 ARG TLS_CERT_PATH=/run/acm/tls.crt
 ARG TLS_KEY_PATH=/run/acm/tls.key
 ARG LOG_LEVEL=info
