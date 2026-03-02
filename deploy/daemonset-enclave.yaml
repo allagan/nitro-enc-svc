@@ -33,7 +33,7 @@ spec:
         - name: enclave-runner
           # Image built by CodeBuild — update IMAGE_TAG to the 7-char git SHA
           # shown in enclave/build-summary.json after each CodeBuild run.
-          image: 394582308905.dkr.ecr.us-east-2.amazonaws.com/nitro-enc-svc/dev/runner:IMAGE_TAG
+          image: 394582308905.dkr.ecr.us-east-2.amazonaws.com/nitro-enc-svc/dev/runner:8d4c881
           securityContext:
             privileged: true   # Required: nitro-cli must access /dev/nitro_enclaves
           # The runner container is a thin management shell. The enclave itself

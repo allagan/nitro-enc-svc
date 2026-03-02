@@ -30,6 +30,14 @@ use server::state::AppState;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install the aws-lc-rs Rustls CryptoProvider as the process default.
+    // Both hyper-rustls and opentelemetry-otlp (via tonic) pull in rustls
+    // 0.23.x which requires an explicit default when multiple provider features
+    // (ring + aws-lc-rs) are compiled in from different transitive deps.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("failed to install rustls CryptoProvider");
+
     // -----------------------------------------------------------------------
     // 1. Configuration
     // -----------------------------------------------------------------------
