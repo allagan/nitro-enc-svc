@@ -44,6 +44,12 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-kms = { version = "1" }
 aws-sdk-secretsmanager = { version = "1" }
 aws-sdk-s3 = { version = "1" }
+aws-smithy-http-client = { version = "1", features = ["default-client"] }
+aws-smithy-runtime-api = { version = "1", features = ["client", "http-1x"] }
+aws-smithy-types = { version = "1", features = ["http-body-1-x"] }
+
+# hyper-rustls: TLS layer for the vsock connector
+hyper-rustls = { version = "0.27", features = ["webpki-roots", "http1"] }
 
 # OpenTelemetry
 opentelemetry = { version = "0.23" }

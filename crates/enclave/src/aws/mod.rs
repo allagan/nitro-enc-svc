@@ -5,5 +5,6 @@
 //! configures each SDK client to target the correct vsock endpoint.
 
 pub mod clients;
+pub mod vsock_connector;
 
 pub use clients::AwsClients;

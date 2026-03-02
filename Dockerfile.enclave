@@ -85,28 +85,35 @@ RUN cargo build --release --locked -p enclave
 FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
 
 # Install runtime dependencies:
-#   ca-certificates — TLS verification for AWS API calls via vsock proxy
-#   openssl         — generates the dev self-signed cert below
-#   shadow-utils    — provides useradd
+#   ca-certificates — TLS verification for AWS API calls (end-to-end via vsock)
+#   openssl         — generates the dev self-signed TLS cert (see below)
+#   socat           — TCP-to-vsock bridge for IMDS credential proxy
 #
 # DEV NOTE: A self-signed TLS cert is generated here so the enclave can start
 # without ACM for Nitro Enclaves.  For production, remove the openssl install
-# and the cert-generation block below; the ACM for Nitro Enclaves agent on the
-# parent EC2 will write the real cert + key to /run/acm/ over vsock before the
-# enclave process reads them.
-RUN dnf install -y ca-certificates openssl shadow-utils \
+# and cert-generation block; the ACM for Nitro Enclaves agent delivers the
+# real cert+key to /run/acm/ over vsock before the process reads them.
+RUN dnf install -y ca-certificates openssl socat \
     && dnf clean all \
-    && useradd --system --no-create-home --shell /sbin/nologin enclave-svc \
     && mkdir -p /run/acm \
     && openssl req -x509 -newkey rsa:2048 -sha256 \
          -keyout /run/acm/tls.key \
          -out /run/acm/tls.crt \
          -days 3650 -nodes \
          -subj '/CN=nitro-enc-svc.local' \
-    && chown enclave-svc:enclave-svc /run/acm/tls.key /run/acm/tls.crt \
     && chmod 400 /run/acm/tls.key /run/acm/tls.crt
 
 COPY --from=builder /build/target/release/enclave /usr/local/bin/enclave
+
+# ---------------------------------------------------------------------------
+# Entrypoint wrapper — starts the IMDS vsock bridge then execs the enclave.
+# The bridge forwards IMDS HTTP traffic through vsock to the parent EC2,
+# where vsock-proxy relays it to the real IMDS endpoint (169.254.169.254:80).
+# The enclave binary reads AWS_EC2_METADATA_SERVICE_ENDPOINT to find the
+# bridge address instead of trying the link-local IMDS address directly.
+# ---------------------------------------------------------------------------
+COPY scripts/enclave-entrypoint.sh /usr/local/bin/enclave-entrypoint.sh
+RUN chmod +x /usr/local/bin/enclave-entrypoint.sh
 
 # ---------------------------------------------------------------------------
 # Configuration — baked into the EIF as ENV instructions.
@@ -143,6 +150,14 @@ ARG TLS_CERT_PATH=/run/acm/tls.crt
 ARG TLS_KEY_PATH=/run/acm/tls.key
 ARG LOG_LEVEL=info
 
+# AWS region baked in so the SDK doesn't query IMDS for region detection.
+ARG AWS_REGION=us-east-2
+ARG AWS_DEFAULT_REGION=us-east-2
+
+# IMDS redirect: socat bridges TCP 127.0.0.1:8004 → vsock(VSOCK_PROXY_CID, 8004),
+# and vsock-proxy on the parent forwards vsock:8004 to 169.254.169.254:80.
+ARG AWS_EC2_METADATA_SERVICE_ENDPOINT=http://127.0.0.1:8004
+
 ENV S3_PREFIX=${S3_PREFIX} \
     SCHEMA_HEADER_NAME=${SCHEMA_HEADER_NAME} \
     DEK_ROTATION_INTERVAL_SECS=${DEK_ROTATION_INTERVAL_SECS} \
@@ -151,9 +166,13 @@ ENV S3_PREFIX=${S3_PREFIX} \
     TLS_PORT=${TLS_PORT} \
     TLS_CERT_PATH=${TLS_CERT_PATH} \
     TLS_KEY_PATH=${TLS_KEY_PATH} \
-    LOG_LEVEL=${LOG_LEVEL}
+    LOG_LEVEL=${LOG_LEVEL} \
+    AWS_REGION=${AWS_REGION} \
+    AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION} \
+    AWS_EC2_METADATA_SERVICE_ENDPOINT=${AWS_EC2_METADATA_SERVICE_ENDPOINT}
 
-USER enclave-svc
+# Run as root inside the enclave VM (isolated environment — no host sharing).
+# The IMDS bridge needs net stack access; the cert files are root-owned.
 
 # The Nitro Enclave kernel boots the container ENTRYPOINT as PID 1.
-ENTRYPOINT ["/usr/local/bin/enclave"]
+ENTRYPOINT ["/usr/local/bin/enclave-entrypoint.sh"]

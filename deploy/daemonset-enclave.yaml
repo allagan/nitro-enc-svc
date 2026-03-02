@@ -34,16 +34,14 @@ spec:
           # Image built by CodeBuild and pushed to ECR.
           # Replace <ECR_REGISTRY> and <IMAGE_TAG> with the values from
           # enclave/build-summary.json after each CodeBuild run.
-          image: 394582308905.dkr.ecr.us-east-2.amazonaws.com/nitro-enc-svc/dev/runner:bf73260
-          # TODO: remove this command override once the run-enclave.sh fix is
-          # baked into the ECR image via a new CodeBuild run. The override patches
-          # the jq parse to strip nitro-cli's non-JSON prefix lines.
+          image: 394582308905.dkr.ecr.us-east-2.amazonaws.com/nitro-enc-svc/dev/runner:dfc4bcc
+          # TODO: remove debug-mode override once vsock proxy is wired up
           command:
             - bash
             - -c
             - >-
               sed -i
-              's/jq -r .EnclaveID/awk \x27\/^{\/,0\x27 | jq -r .EnclaveID/'
+              's/--enclave-cid "\${ENCLAVE_CID}"/--enclave-cid "\${ENCLAVE_CID}" --debug-mode/'
               /usr/local/bin/run-enclave.sh;
               exec /usr/local/bin/run-enclave.sh
           securityContext:
