@@ -97,13 +97,13 @@ FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
 # (start_imds_bridge() in main.rs), so socat is not required here.
 RUN dnf install -y ca-certificates openssl iproute \
     && dnf clean all \
-    && mkdir -p /run/acm \
+    && mkdir -p /etc/acm \
     && openssl req -x509 -newkey rsa:2048 -sha256 \
-         -keyout /run/acm/tls.key \
-         -out /run/acm/tls.crt \
+         -keyout /etc/acm/tls.key \
+         -out /etc/acm/tls.crt \
          -days 3650 -nodes \
          -subj '/CN=nitro-enc-svc.local' \
-    && chmod 400 /run/acm/tls.key /run/acm/tls.crt
+    && chmod 400 /etc/acm/tls.key /etc/acm/tls.crt
 
 COPY --from=builder /build/target/release/enclave /usr/local/bin/enclave
 
@@ -146,10 +146,12 @@ ARG SCHEMA_REFRESH_INTERVAL_SECS=300
 ARG VSOCK_PROXY_PORT=8000
 ARG TLS_PORT=443
 # Paths to the TLS cert and key.  In dev, these are the self-signed files
-# generated above.  In production, override to the paths where the ACM for
-# Nitro Enclaves agent deposits the real certificate and private key.
-ARG TLS_CERT_PATH=/run/acm/tls.crt
-ARG TLS_KEY_PATH=/run/acm/tls.key
+# generated at /etc/acm/ above.  In production, override to the paths where
+# the ACM for Nitro Enclaves agent deposits the real certificate and private key.
+# NOTE: do not use /run/ — on AL2023-based images /run is a tmpfs that is
+# reset at kernel boot, discarding any files baked into the EIF.
+ARG TLS_CERT_PATH=/etc/acm/tls.crt
+ARG TLS_KEY_PATH=/etc/acm/tls.key
 ARG LOG_LEVEL=info
 
 # AWS region baked in so the SDK doesn't query IMDS for region detection.
