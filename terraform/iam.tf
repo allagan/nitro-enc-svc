@@ -133,6 +133,26 @@ resource "aws_iam_role_policy" "enclave_s3" {
   })
 }
 
+resource "aws_iam_role_policy" "enclave_cloudwatch" {
+  name = "enclave-cloudwatch"
+  role = aws_iam_role.enclave_node.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+      ]
+      Resource = "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/nitro-enc-svc/*"
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "enclave_node" {
   name = "${var.cluster_name}-enclave-node"
   role = aws_iam_role.enclave_node.name

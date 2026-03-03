@@ -1,0 +1,158 @@
+# OpenTelemetry Collector Contrib DaemonSet for Nitro Enclave telemetry.
+#
+# Uses otel/opentelemetry-collector-contrib (not ADOT) because ADOT v0.43.0
+# does not include the tcplog receiver. The contrib image ships all receivers
+# and exporters including tcplog, awscloudwatchlogs, and awsxray.
+#
+# Runs on every nitro node (aws.amazon.com/nitro-enclaves=true) with
+# hostNetwork: true so it binds directly to the node's loopback interface.
+# The vsock-proxy instances on the parent EC2 forward enclave traffic to
+# this collector on 127.0.0.1:4317 (OTLP traces) and 127.0.0.1:4318 (logs).
+#
+# IAM: the collector uses the EC2 node role (enclave-node) credentials via
+# IMDS (accessible on host network) to write to CloudWatch Logs.
+# The enclave-cloudwatch inline policy on that role grants the required
+# logs:CreateLogGroup / logs:PutLogEvents permissions.
+#
+# CloudWatch log group: /nitro-enc-svc/dev/enclave
+#   Stream: enclave-logs  ← JSON log lines from the enclave tracing_subscriber
+#   (OTLP traces are exported to AWS X-Ray via awsxray)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: adot-collector-config
+  namespace: nitro-enc-svc
+data:
+  config.yaml: |
+    receivers:
+      # OTLP/gRPC: receives trace spans from the enclave via vsock→TCP bridge.
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+
+      # tcplog: receives newline-delimited JSON log records from the enclave.
+      # The enclave's SharedTcpWriter connects to 127.0.0.1:4318 (vsock bridge).
+      tcplog:
+        listen_address: "0.0.0.0:4318"
+        operators:
+          - type: json_parser
+            timestamp:
+              parse_from: attributes.timestamp
+              layout_type: gotime
+              layout: "2006-01-02T15:04:05.999999999Z07:00"
+            severity:
+              parse_from: attributes.level
+
+    processors:
+      batch:
+        timeout: 5s
+        send_batch_size: 512
+
+      # Add enclave context attributes to all telemetry.
+      resource:
+        attributes:
+          - key: service.name
+            value: nitro-enc-svc
+            action: upsert
+          - key: deployment.environment
+            value: dev
+            action: upsert
+
+    exporters:
+      # Structured log records → CloudWatch Logs.
+      awscloudwatchlogs:
+        log_group_name: /nitro-enc-svc/dev/enclave
+        log_stream_name: enclave-logs
+        region: us-east-2
+        log_retention: 30
+
+      # OTLP traces → AWS X-Ray (CloudWatch ServiceLens).
+      awsxray:
+        region: us-east-2
+        index_all_attributes: true
+
+      # Debug: also log to collector stdout for troubleshooting.
+      debug:
+        verbosity: normal
+
+    service:
+      telemetry:
+        logs:
+          level: warn
+      pipelines:
+        logs:
+          receivers: [tcplog]
+          processors: [resource, batch]
+          exporters: [awscloudwatchlogs, debug]
+        traces:
+          receivers: [otlp]
+          processors: [resource, batch]
+          exporters: [awsxray, debug]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: adot-collector
+  namespace: nitro-enc-svc
+  labels:
+    app: adot-collector
+spec:
+  selector:
+    matchLabels:
+      app: adot-collector
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: adot-collector
+    spec:
+      # Only run on Nitro Enclave nodes — the enclave vsock bridges target
+      # the collector on the same physical host.
+      nodeSelector:
+        aws.amazon.com/nitro-enclaves: "true"
+      tolerations:
+        - operator: Exists
+
+      # hostNetwork is required so the collector binds to 127.0.0.1:4317/4318
+      # on the EC2 host's loopback interface. The vsock-proxy instances on the
+      # parent forward vsock(3, 4317/4318) → 127.0.0.1:4317/4318, which reaches
+      # this collector. hostNetwork also gives IMDS access for IAM credentials.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+
+      containers:
+        - name: adot-collector
+          image: otel/opentelemetry-collector-contrib:0.97.0
+          args: ["--config=/etc/otelcol-contrib/config.yaml"]
+          ports:
+            - containerPort: 4317
+              hostPort: 4317
+              name: otlp-grpc
+              protocol: TCP
+            - containerPort: 4318
+              hostPort: 4318
+              name: log-tcp
+              protocol: TCP
+          env:
+            - name: AWS_DEFAULT_REGION
+              value: us-east-2
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol-contrib
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: adot-collector-config
