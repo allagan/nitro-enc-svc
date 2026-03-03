@@ -21,7 +21,18 @@ IMDS_LOCAL_PORT="${IMDS_LOCAL_PORT:-8004}"
 echo "INFO: starting IMDS vsock bridge (127.0.0.1:${IMDS_LOCAL_PORT} -> vsock(${VSOCK_CID},${IMDS_VSOCK_PORT}))"
 socat \
     TCP-LISTEN:${IMDS_LOCAL_PORT},fork,reuseaddr \
-    VSOCK-CONNECT:${VSOCK_CID}:${IMDS_VSOCK_PORT} &
+    VSOCK-CONNECT:${VSOCK_CID}:${IMDS_VSOCK_PORT} \
+    2>&1 &
+SOCAT_PID=$!
+
+# Give socat 1 second to bind the TCP listener, then verify it is still running.
+# If socat exits immediately the vsock module is missing or the address is wrong.
+sleep 1
+if ! kill -0 "${SOCAT_PID}" 2>/dev/null; then
+    echo "ERROR: socat IMDS bridge exited unexpectedly — vsock support missing or CID wrong" >&2
+    exit 1
+fi
+echo "INFO: IMDS bridge running (PID=${SOCAT_PID}, vsock CID=${VSOCK_CID}:${IMDS_VSOCK_PORT})"
 
 echo "INFO: exec nitro-enc-svc"
 exec /usr/local/bin/enclave "$@"
