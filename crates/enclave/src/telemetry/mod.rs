@@ -10,5 +10,6 @@
 //! - Log level is configurable via `LOG_LEVEL` (default: `info`).
 
 pub mod init;
+pub mod log_writer;
 
 pub use init::init_telemetry;

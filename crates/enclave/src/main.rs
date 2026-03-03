@@ -31,6 +31,120 @@ use dek::DekStore;
 use schema::SchemaCache;
 use server::state::AppState;
 
+/// Spawn a background task that bridges TCP 127.0.0.1:4317 → vsock(parent_cid, 4317).
+///
+/// The OTEL SDK inside the enclave exports OTLP/gRPC to
+/// `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317`. This bridge
+/// forwards those connections over vsock to the ADOT Collector running on the
+/// parent EC2 host (exposed there via a vsock-proxy on port 4317).
+async fn start_otlp_bridge(parent_cid: u32) -> Result<()> {
+    const OTLP_LOCAL_PORT: u16 = 4317;
+    const OTLP_VSOCK_PORT: u32 = 4317;
+
+    let listener = TcpListener::bind(("127.0.0.1", OTLP_LOCAL_PORT))
+        .await
+        .context("failed to bind OTLP bridge on 127.0.0.1:4317")?;
+
+    eprintln!(
+        "INFO: OTLP bridge listening on 127.0.0.1:{OTLP_LOCAL_PORT} \
+         -> vsock({parent_cid},{OTLP_VSOCK_PORT})"
+    );
+
+    tokio::spawn(async move {
+        loop {
+            let (tcp, _peer) = match listener.accept().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("WARN: OTLP bridge accept error: {e}");
+                    continue;
+                }
+            };
+            tokio::spawn(async move {
+                let vsock =
+                    match VsockStream::connect(VsockAddr::new(parent_cid, OTLP_VSOCK_PORT)).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("WARN: OTLP bridge vsock connect error: {e}");
+                            return;
+                        }
+                    };
+                let (mut tr, mut tw) = tokio::io::split(tcp);
+                let (mut vr, mut vw) = tokio::io::split(vsock);
+                tokio::select! {
+                    _ = tokio::io::copy(&mut tr, &mut vw) => {}
+                    _ = tokio::io::copy(&mut vr, &mut tw) => {}
+                }
+            });
+        }
+    });
+
+    Ok(())
+}
+
+/// Connect TCP 127.0.0.1:4318 and return a [`SharedTcpWriter`] for the log bridge.
+///
+/// JSON log lines written to the `SharedTcpWriter` flow through the vsock bridge
+/// (TCP → vsock(parent_cid, 4318)) to the ADOT Collector's `tcplog` receiver on the
+/// parent EC2, which exports them to CloudWatch Logs.
+///
+/// Returns `None` if the vsock-proxy on the parent is not listening on port 4318
+/// (e.g., ADOT Collector not yet configured). In that case the caller falls back to
+/// stderr-only logging.
+async fn start_log_bridge(parent_cid: u32) -> Option<telemetry::log_writer::SharedTcpWriter> {
+    const LOG_LOCAL_PORT: u16 = 4318;
+    const LOG_VSOCK_PORT: u32 = 4318;
+
+    // Start the vsock bridge for log port first (same pattern as IMDS/OTLP bridges).
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", LOG_LOCAL_PORT)).await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("WARN: log bridge bind failed: {e}");
+            return None;
+        }
+    };
+    eprintln!(
+        "INFO: Log bridge listening on 127.0.0.1:{LOG_LOCAL_PORT} \
+         -> vsock({parent_cid},{LOG_VSOCK_PORT})"
+    );
+    tokio::spawn(async move {
+        loop {
+            let (tcp, _peer) = match listener.accept().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("WARN: log bridge accept error: {e}");
+                    continue;
+                }
+            };
+            tokio::spawn(async move {
+                let vsock =
+                    match VsockStream::connect(VsockAddr::new(parent_cid, LOG_VSOCK_PORT)).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("WARN: log bridge vsock connect error: {e}");
+                            return;
+                        }
+                    };
+                let (mut tr, mut tw) = tokio::io::split(tcp);
+                let (mut vr, mut vw) = tokio::io::split(vsock);
+                tokio::select! {
+                    _ = tokio::io::copy(&mut tr, &mut vw) => {}
+                    _ = tokio::io::copy(&mut vr, &mut tw) => {}
+                }
+            });
+        }
+    });
+
+    // Connect the SharedTcpWriter to 127.0.0.1:4318, which the bridge above will forward.
+    let writer = telemetry::log_writer::SharedTcpWriter::try_connect("127.0.0.1:4318");
+    if writer.is_none() {
+        eprintln!(
+            "WARN: log bridge writer could not connect to 127.0.0.1:{LOG_LOCAL_PORT}; \
+             CloudWatch log forwarding disabled (stderr only)"
+        );
+    }
+    writer
+}
+
 /// Spawn a background task that bridges TCP 127.0.0.1:8004 → vsock(parent_cid, 8004).
 ///
 /// The AWS SDK inside the enclave sends IMDS requests to
@@ -112,9 +226,22 @@ async fn main() -> Result<()> {
     start_imds_bridge(cfg.vsock_proxy_cid).await?;
 
     // -----------------------------------------------------------------------
+    // 2b. OTLP + log vsock bridges
+    // -----------------------------------------------------------------------
+    // Must start before init_telemetry() so the OTEL SDK and log writer can
+    // reach the ADOT Collector on the parent EC2 via vsock bridges.
+    //   Port 4317: OTLP/gRPC traces → vsock(cid, 4317)
+    //   Port 4318: JSON log lines  → vsock(cid, 4318) → tcplog receiver
+    start_otlp_bridge(cfg.vsock_proxy_cid).await?;
+
+    // The log bridge is best-effort: if it fails (ADOT Collector not yet up),
+    // start_log_bridge returns the writer as None and we fall back to stderr.
+    let log_writer = start_log_bridge(cfg.vsock_proxy_cid).await;
+
+    // -----------------------------------------------------------------------
     // 3. Telemetry
     // -----------------------------------------------------------------------
-    telemetry::init_telemetry(&cfg.otel_exporter_otlp_endpoint, &cfg.log_level)?;
+    telemetry::init_telemetry(&cfg.otel_exporter_otlp_endpoint, &cfg.log_level, log_writer)?;
     info!(
         version = env!("CARGO_PKG_VERSION"),
         tls_port = cfg.tls_port,
