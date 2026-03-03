@@ -95,7 +95,7 @@ FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
 #
 # The IMDS vsock bridge is implemented in Rust inside the enclave binary
 # (start_imds_bridge() in main.rs), so socat is not required here.
-RUN dnf install -y ca-certificates openssl \
+RUN dnf install -y ca-certificates openssl iproute \
     && dnf clean all \
     && mkdir -p /run/acm \
     && openssl req -x509 -newkey rsa:2048 -sha256 \

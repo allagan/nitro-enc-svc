@@ -8,5 +8,11 @@
 
 set -e
 
+# The Nitro Enclave kernel does not bring up the loopback interface
+# automatically.  The IMDS vsock bridge in the enclave binary binds to
+# 127.0.0.1:8004, which requires lo to be UP.  Without this, bind(2) fails
+# with EADDRNOTAVAIL and PID 1 exits before the console can connect.
+ip link set lo up 2>/dev/null || true
+
 echo "INFO: exec nitro-enc-svc"
 exec /usr/local/bin/enclave "$@"
