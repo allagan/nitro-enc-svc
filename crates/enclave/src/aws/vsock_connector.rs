@@ -40,7 +40,10 @@ fn vsock_port(host: &str, base_port: u32) -> u32 {
         base_port + 1
     } else if host.starts_with("secretsmanager.") {
         base_port + 2
-    } else if host.starts_with("s3.") || host == "s3.amazonaws.com" {
+    } else if host.starts_with("s3.") || host == "s3.amazonaws.com" || host.contains(".s3.") {
+        // Match both path-style (s3.<region>.amazonaws.com) and virtual-hosted-style
+        // (<bucket>.s3.<region>.amazonaws.com) S3 endpoints. The AWS SDK defaults to
+        // virtual-hosted-style since 2020, so bucket-prefixed hostnames are the norm.
         base_port + 3
     } else {
         // Unknown service — fall back to KMS port so the error is visible.
@@ -209,5 +212,10 @@ mod tests {
     fn port_mapping_s3() {
         assert_eq!(vsock_port("s3.us-east-2.amazonaws.com", 8000), 8003);
         assert_eq!(vsock_port("s3.amazonaws.com", 8000), 8003);
+        // Virtual-hosted-style: <bucket>.s3.<region>.amazonaws.com
+        assert_eq!(
+            vsock_port("my-bucket.s3.us-east-2.amazonaws.com", 8000),
+            8003
+        );
     }
 }
