@@ -87,13 +87,15 @@ FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS runtime
 # Install runtime dependencies:
 #   ca-certificates — TLS verification for AWS API calls (end-to-end via vsock)
 #   openssl         — generates the dev self-signed TLS cert (see below)
-#   socat           — TCP-to-vsock bridge for IMDS credential proxy
 #
 # DEV NOTE: A self-signed TLS cert is generated here so the enclave can start
 # without ACM for Nitro Enclaves.  For production, remove the openssl install
 # and cert-generation block; the ACM for Nitro Enclaves agent delivers the
 # real cert+key to /run/acm/ over vsock before the process reads them.
-RUN dnf install -y ca-certificates openssl socat \
+#
+# The IMDS vsock bridge is implemented in Rust inside the enclave binary
+# (start_imds_bridge() in main.rs), so socat is not required here.
+RUN dnf install -y ca-certificates openssl \
     && dnf clean all \
     && mkdir -p /run/acm \
     && openssl req -x509 -newkey rsa:2048 -sha256 \

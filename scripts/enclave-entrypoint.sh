@@ -1,38 +1,12 @@
 #!/bin/sh
 # scripts/enclave-entrypoint.sh
 #
-# Enclave PID-1 wrapper.  Starts the IMDS vsock bridge then execs the
-# nitro-enc-svc binary.
+# Enclave PID-1 wrapper. Execs the nitro-enc-svc binary.
 #
-# The bridge (socat) forwards IMDS HTTP traffic from 127.0.0.1:8004 through
-# vsock to the parent EC2 (CID from VSOCK_PROXY_CID env var, vsock port 8004),
-# where vsock-proxy relays it to the real IMDS endpoint (169.254.169.254:80).
-#
-# AWS_EC2_METADATA_SERVICE_ENDPOINT=http://127.0.0.1:8004 (baked into the EIF)
-# tells the AWS SDK to use the bridge instead of the unreachable link-local
-# IMDS address.
+# The binary handles the IMDS vsock bridge internally (see start_imds_bridge()
+# in main.rs), so no socat or external tool is needed here.
 
 set -e
-
-VSOCK_CID="${VSOCK_PROXY_CID:-3}"
-IMDS_VSOCK_PORT="${IMDS_VSOCK_PORT:-8004}"
-IMDS_LOCAL_PORT="${IMDS_LOCAL_PORT:-8004}"
-
-echo "INFO: starting IMDS vsock bridge (127.0.0.1:${IMDS_LOCAL_PORT} -> vsock(${VSOCK_CID},${IMDS_VSOCK_PORT}))"
-socat \
-    TCP-LISTEN:${IMDS_LOCAL_PORT},fork,reuseaddr \
-    VSOCK-CONNECT:${VSOCK_CID}:${IMDS_VSOCK_PORT} \
-    2>&1 &
-SOCAT_PID=$!
-
-# Give socat 1 second to bind the TCP listener, then verify it is still running.
-# If socat exits immediately the vsock module is missing or the address is wrong.
-sleep 1
-if ! kill -0 "${SOCAT_PID}" 2>/dev/null; then
-    echo "ERROR: socat IMDS bridge exited unexpectedly — vsock support missing or CID wrong" >&2
-    exit 1
-fi
-echo "INFO: IMDS bridge running (PID=${SOCAT_PID}, vsock CID=${VSOCK_CID}:${IMDS_VSOCK_PORT})"
 
 echo "INFO: exec nitro-enc-svc"
 exec /usr/local/bin/enclave "$@"

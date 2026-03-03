@@ -2,12 +2,13 @@
 //!
 //! Startup sequence:
 //! 1. Load and validate [`Config`] from environment variables.
-//! 2. Initialise the telemetry pipeline (OTEL + tracing).
-//! 3. Initialise AWS SDK clients pointing at the vsock proxy.
-//! 4. Fetch + decrypt the DEK from Secrets Manager / KMS and seed [`DekStore`].
-//! 5. Load OpenAPI schemas from S3 into [`SchemaCache`].
-//! 6. Spawn background tasks: DEK rotation, schema refresh.
-//! 7. Build the Axum router and start the TLS server.
+//! 2. Start the IMDS vsock bridge (TCP 127.0.0.1:8004 → vsock(parent,8004)).
+//! 3. Initialise the telemetry pipeline (OTEL + tracing).
+//! 4. Initialise AWS SDK clients pointing at the vsock proxy.
+//! 5. Fetch + decrypt the DEK from Secrets Manager / KMS and seed [`DekStore`].
+//! 6. Load OpenAPI schemas from S3 into [`SchemaCache`].
+//! 7. Spawn background tasks: DEK rotation, schema refresh.
+//! 8. Build the Axum router and start the TLS server.
 
 mod aws;
 mod config;
@@ -19,7 +20,9 @@ mod telemetry;
 
 use anyhow::{Context, Result};
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+use tokio_vsock::{VsockAddr, VsockStream};
 use tower::ServiceExt as _;
 use tracing::{error, info, warn};
 
@@ -27,6 +30,60 @@ use config::Config;
 use dek::DekStore;
 use schema::SchemaCache;
 use server::state::AppState;
+
+/// Spawn a background task that bridges TCP 127.0.0.1:8004 → vsock(parent_cid, 8004).
+///
+/// The AWS SDK inside the enclave sends IMDS requests to
+/// `AWS_EC2_METADATA_SERVICE_ENDPOINT=http://127.0.0.1:8004`. This bridge
+/// receives those TCP connections and forwards them over vsock to the
+/// `vsock-proxy` running on the parent EC2, which relays them to
+/// 169.254.169.254:80 (the real IMDS endpoint).
+///
+/// The bridge is implemented in Rust (tokio-vsock) to avoid depending on
+/// socat being compiled with VSOCK support in the enclave OS image.
+async fn start_imds_bridge(parent_cid: u32) -> Result<()> {
+    const IMDS_LOCAL_PORT: u16 = 8004;
+    const IMDS_VSOCK_PORT: u32 = 8004;
+
+    let listener = TcpListener::bind(("127.0.0.1", IMDS_LOCAL_PORT))
+        .await
+        .context("failed to bind IMDS bridge on 127.0.0.1:8004")?;
+
+    eprintln!(
+        "INFO: IMDS bridge listening on 127.0.0.1:{IMDS_LOCAL_PORT} \
+         -> vsock({parent_cid},{IMDS_VSOCK_PORT})"
+    );
+
+    tokio::spawn(async move {
+        loop {
+            let (tcp, _peer) = match listener.accept().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("WARN: IMDS bridge accept error: {e}");
+                    continue;
+                }
+            };
+            tokio::spawn(async move {
+                let vsock =
+                    match VsockStream::connect(VsockAddr::new(parent_cid, IMDS_VSOCK_PORT)).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!("WARN: IMDS bridge vsock connect error: {e}");
+                            return;
+                        }
+                    };
+                let (mut tr, mut tw) = tokio::io::split(tcp);
+                let (mut vr, mut vw) = tokio::io::split(vsock);
+                tokio::select! {
+                    _ = tokio::io::copy(&mut tr, &mut vw) => {}
+                    _ = tokio::io::copy(&mut vr, &mut tw) => {}
+                }
+            });
+        }
+    });
+
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -48,7 +105,14 @@ async fn main() -> Result<()> {
     })?;
 
     // -----------------------------------------------------------------------
-    // 2. Telemetry
+    // 2. IMDS vsock bridge
+    // -----------------------------------------------------------------------
+    // Must start before AwsClients::init() so the SDK's credential resolver
+    // can reach IMDS via http://127.0.0.1:8004.
+    start_imds_bridge(cfg.vsock_proxy_cid).await?;
+
+    // -----------------------------------------------------------------------
+    // 3. Telemetry
     // -----------------------------------------------------------------------
     telemetry::init_telemetry(&cfg.otel_exporter_otlp_endpoint, &cfg.log_level)?;
     info!(
@@ -58,30 +122,30 @@ async fn main() -> Result<()> {
     );
 
     // -----------------------------------------------------------------------
-    // 3. AWS clients
+    // 4. AWS clients
     // -----------------------------------------------------------------------
     let aws = aws::AwsClients::init(cfg.vsock_proxy_cid, cfg.vsock_proxy_port).await?;
 
     // -----------------------------------------------------------------------
-    // 4. DEK initialisation
+    // 5. DEK initialisation
     // -----------------------------------------------------------------------
     let dek_store = DekStore::new();
     dek::fetch_and_store(&aws, &cfg, &dek_store).await?;
 
     // -----------------------------------------------------------------------
-    // 5. Schema cache initialisation
+    // 6. Schema cache initialisation
     // -----------------------------------------------------------------------
     let schema_cache = SchemaCache::new();
     schema::load_all(&aws, &cfg, &schema_cache).await?;
 
     // -----------------------------------------------------------------------
-    // 6. Background tasks
+    // 7. Background tasks
     // -----------------------------------------------------------------------
     let _dek_rotation = dek::rotation_task(aws.clone(), cfg.clone(), dek_store.clone());
     let _schema_refresh = schema::refresh_task(aws.clone(), cfg.clone(), schema_cache.clone());
 
     // -----------------------------------------------------------------------
-    // 7. TLS configuration (cert + key written by ACM for Nitro Enclaves)
+    // 8. TLS configuration (cert + key written by ACM for Nitro Enclaves)
     // -----------------------------------------------------------------------
     let cert_pem = std::fs::read(&cfg.tls_cert_path)
         .with_context(|| format!("failed to read TLS cert: {}", cfg.tls_cert_path))?;
@@ -91,7 +155,7 @@ async fn main() -> Result<()> {
     let tls_acceptor = TlsAcceptor::from(tls_cfg);
 
     // -----------------------------------------------------------------------
-    // 8. HTTPS server (TLS accept loop)
+    // 9. HTTPS server (TLS accept loop)
     // -----------------------------------------------------------------------
     let state = AppState::new(dek_store, schema_cache, cfg.schema_header_name.clone());
     let router = server::router::build(state);
