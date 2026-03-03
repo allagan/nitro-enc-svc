@@ -1,0 +1,95 @@
+# vsock-proxy Deployment + NLB Service for external/bastion access.
+#
+# The vsock-proxy container accepts HTTPS (TLS pass-through) on port 8443,
+# forwards it to the Nitro Enclave at vsock(16, 443), and returns the response.
+# TLS terminates inside the enclave; this proxy only sees encrypted bytes.
+#
+# The Service creates an internal AWS Network Load Balancer (NLB) accessible
+# from within the VPC — including any bastion host in the same VPC.
+#
+# IMPORTANT: The pod MUST run on the Nitro Enclave node (same EC2 instance)
+# because vsock connections are node-local. The nodeSelector ensures this.
+#
+# Usage from bastion:
+#   NLB_DNS=$(kubectl get svc -n nitro-enc-svc vsock-proxy-nlb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+#   curl -sk https://$NLB_DNS:8443/health
+#   curl -sk -X POST https://$NLB_DNS:8443/encrypt \
+#     -H "Content-Type: application/json" \
+#     -H "X-Schema-Name: payments-v1" \
+#     -d '{"payload":{"card_number":"4111111111111111","card_holder_name":"Jane Smith"}}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vsock-proxy
+  namespace: nitro-enc-svc
+  labels:
+    app: vsock-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vsock-proxy
+  template:
+    metadata:
+      labels:
+        app: vsock-proxy
+    spec:
+      # Must run on the same node as the Nitro Enclave (vsock is node-local).
+      nodeSelector:
+        aws.amazon.com/nitro-enclaves: "true"
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: vsock-proxy
+          image: 394582308905.dkr.ecr.us-east-2.amazonaws.com/nitro-enc-svc/dev/vsock-proxy:2e2ae31
+          ports:
+            - containerPort: 8443
+              name: https-proxy
+              protocol: TCP
+          env:
+            - name: LISTEN_PORT
+              value: "8443"
+            # CID of the Nitro Enclave on this node — must match ENCLAVE_CID in
+            # the enclave DaemonSet and VSOCK_PROXY_CID baked into the EIF.
+            - name: ENCLAVE_CID
+              value: "16"
+            - name: ENCLAVE_PORT
+              value: "443"
+            # MAIN_APP_ADDR is the downstream HTTP target after the enclave
+            # returns the encrypted payload. For direct API access from the NLB
+            # (no downstream app), point at a no-op echo address; the enclave
+            # response itself is what we care about.
+            - name: MAIN_APP_ADDR
+              value: "127.0.0.1:9999"
+            - name: LOG_LEVEL
+              value: "info"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vsock-proxy-nlb
+  namespace: nitro-enc-svc
+  annotations:
+    # Use AWS Network Load Balancer (in-tree controller, L4 TCP pass-through).
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    # Internal NLB — accessible within the VPC only (bastion, other EC2, etc.).
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+    # Cross-zone load balancing (only one node here, but good practice).
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app: vsock-proxy
+  ports:
+    - name: https
+      port: 8443
+      targetPort: 8443
+      protocol: TCP
