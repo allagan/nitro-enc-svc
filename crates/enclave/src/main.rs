@@ -165,9 +165,8 @@ async fn main() -> Result<()> {
     // TCP sockets inside the enclave are not reachable from outside. Binding
     // on VMADDR_CID_ANY (0xFFFFFFFF) accepts connections from any peer CID.
     info!(port = cfg.tls_port, "listening (TLS, vsock)");
-    let mut listener =
-        VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, cfg.tls_port as u32))
-            .context("failed to bind vsock TLS listener")?;
+    let mut listener = VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, cfg.tls_port as u32))
+        .context("failed to bind vsock TLS listener")?;
 
     loop {
         let (vsock_stream, peer_addr) = listener.accept().await?;
