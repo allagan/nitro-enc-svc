@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-use tokio_vsock::{VsockAddr, VsockStream};
+use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
 use tower::ServiceExt as _;
 use tracing::{error, info, warn};
 
@@ -160,17 +160,22 @@ async fn main() -> Result<()> {
     let state = AppState::new(dek_store, schema_cache, cfg.schema_header_name.clone());
     let router = server::router::build(state);
 
-    let addr: std::net::SocketAddr = ([0, 0, 0, 0], cfg.tls_port).into();
-    info!(addr = %addr, "listening (TLS)");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Nitro Enclaves have no external network interface — the only way the
+    // vsock-proxy sidecar (on the parent EC2) can reach us is via AF_VSOCK.
+    // TCP sockets inside the enclave are not reachable from outside. Binding
+    // on VMADDR_CID_ANY (0xFFFFFFFF) accepts connections from any peer CID.
+    info!(port = cfg.tls_port, "listening (TLS, vsock)");
+    let mut listener =
+        VsockListener::bind(VsockAddr::new(VMADDR_CID_ANY, cfg.tls_port as u32))
+            .context("failed to bind vsock TLS listener")?;
 
     loop {
-        let (tcp_stream, peer_addr) = listener.accept().await?;
+        let (vsock_stream, peer_addr) = listener.accept().await?;
         let acceptor = tls_acceptor.clone();
         let router = router.clone();
 
         tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(tcp_stream).await {
+            let tls_stream = match acceptor.accept(vsock_stream).await {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(peer = %peer_addr, err = %e, "TLS handshake failed");
