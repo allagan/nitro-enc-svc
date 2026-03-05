@@ -31,6 +31,8 @@ tokio-vsock = { version = "0.5" }
 # Encryption
 aes-gcm-siv = { version = "0.11" }
 base64 = { version = "0.22" }
+hmac = { version = "0.12" }
+sha2 = { version = "0.10" }
 
 # Serialisation
 serde = { version = "1", features = ["derive"] }

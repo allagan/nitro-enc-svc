@@ -4,14 +4,22 @@
 //! Identical plaintext + DEK always produces the same ciphertext (deterministic),
 //! which is required for tokenisation/lookup use cases.
 //!
+//! **Nonce derivation:** The 12-byte nonce is derived deterministically as
+//! `HMAC-SHA256(key=DEK, data=plaintext)[0..12]`. Because AES-GCM-SIV is
+//! nonce-misuse-resistant, reusing the same nonce for the same plaintext is
+//! explicitly safe — it only reveals that two ciphertexts share the same
+//! plaintext, which is the tokenisation guarantee we want.
+//!
 //! **Do NOT substitute plain AES-256-GCM with a fixed nonce.** GCM nonce reuse
 //! is catastrophic — it breaks both confidentiality and authentication.
 
 use aes_gcm_siv::{
-    aead::{Aead, KeyInit, OsRng},
+    aead::{Aead, KeyInit},
     Aes256GcmSiv, Nonce,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use thiserror::Error;
 
 /// Byte length of an AES-256 key (32 bytes = 256 bits).
@@ -95,25 +103,39 @@ pub enum CipherError {
     InvalidFormat,
 }
 
+/// Derive a deterministic 12-byte nonce from a DEK and plaintext.
+///
+/// Uses `HMAC-SHA256(key=DEK, data=plaintext)` and takes the first 12 bytes.
+/// This ensures:
+/// - Same plaintext + same DEK → same nonce → same ciphertext (tokenisation).
+/// - Different plaintext or different DEK → different nonce → different ciphertext.
+///
+/// AES-GCM-SIV is nonce-misuse-resistant (RFC 8452 §3): reusing the same nonce
+/// for the same plaintext is safe and is the intended use case here.
+fn derive_nonce(dek: &[u8], plaintext: &[u8]) -> [u8; NONCE_LEN] {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(dek)
+        .expect("HMAC accepts keys of any length");
+    mac.update(plaintext);
+    let result = mac.finalize().into_bytes();
+    let mut nonce = [0u8; NONCE_LEN];
+    nonce.copy_from_slice(&result[..NONCE_LEN]);
+    nonce
+}
+
 /// Encrypt a plaintext string field using AES-256-GCM-SIV.
 ///
-/// A random 96-bit nonce is generated per call via the OS CSPRNG. Because
-/// AES-GCM-SIV is deterministic-nonce-safe, the same plaintext + DEK will
-/// produce the same output only when the same nonce is reused — here each call
-/// generates a fresh nonce.
+/// The nonce is derived deterministically via `HMAC-SHA256(key=DEK, data=plaintext)[0..12]`,
+/// guaranteeing that identical plaintext + DEK always produces identical ciphertext.
+/// This is required for tokenisation and lookup use cases.
 ///
 /// # Errors
 ///
 /// Returns [`CipherError::InvalidKeyLength`] if `dek` is not [`KEY_LEN`] bytes.
-/// Returns [`CipherError::AeadFailure`] on an internal AEAD error (should be unreachable
-/// with a valid key and nonce).
+/// Returns [`CipherError::AeadFailure`] on an internal AEAD error (unreachable
+/// with a valid key and well-formed nonce).
 pub fn encrypt_field(plaintext: &[u8], dek: &[u8]) -> Result<EncryptedField, CipherError> {
     let cipher = build_cipher(dek)?;
-
-    // Use OsRng for a cryptographically secure random nonce.
-    use aes_gcm_siv::aead::rand_core::RngCore;
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce_bytes = derive_nonce(dek, plaintext);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -153,16 +175,18 @@ fn build_cipher(dek: &[u8]) -> Result<Aes256GcmSiv, CipherError> {
 mod tests {
     use super::*;
 
-    fn random_dek() -> Vec<u8> {
-        use aes_gcm_siv::aead::rand_core::RngCore;
-        let mut key = vec![0u8; KEY_LEN];
-        OsRng.fill_bytes(&mut key);
-        key
+    /// Fixed 32-byte test DEK — never use outside tests.
+    fn test_dek_a() -> Vec<u8> {
+        vec![0xAAu8; KEY_LEN]
+    }
+
+    fn test_dek_b() -> Vec<u8> {
+        vec![0xBBu8; KEY_LEN]
     }
 
     #[test]
     fn encrypt_decrypt_round_trip() {
-        let dek = random_dek();
+        let dek = test_dek_a();
         let plaintext = b"123-45-6789";
         let encrypted = encrypt_field(plaintext, &dek).unwrap();
         let decrypted = decrypt_field(&encrypted, &dek).unwrap();
@@ -170,11 +194,37 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_same_plaintext_same_dek() {
+        let dek = test_dek_a();
+        let plaintext = b"4111111111111111";
+        let a = encrypt_field(plaintext, &dek).unwrap();
+        let b = encrypt_field(plaintext, &dek).unwrap();
+        assert_eq!(a.nonce, b.nonce, "nonces must match for same plaintext+DEK");
+        assert_eq!(a.ciphertext, b.ciphertext, "ciphertexts must match");
+    }
+
+    #[test]
+    fn deterministic_different_plaintext_differs() {
+        let dek = test_dek_a();
+        let a = encrypt_field(b"4111111111111111", &dek).unwrap();
+        let b = encrypt_field(b"5500005555555559", &dek).unwrap();
+        assert_ne!(a.nonce, b.nonce, "different plaintexts must produce different nonces");
+        assert_ne!(a.ciphertext, b.ciphertext);
+    }
+
+    #[test]
+    fn deterministic_different_dek_differs() {
+        let plaintext = b"Jane Smith";
+        let a = encrypt_field(plaintext, &test_dek_a()).unwrap();
+        let b = encrypt_field(plaintext, &test_dek_b()).unwrap();
+        assert_ne!(a.nonce, b.nonce, "different DEKs must produce different nonces");
+        assert_ne!(a.ciphertext, b.ciphertext);
+    }
+
+    #[test]
     fn wrong_key_fails_decryption() {
-        let dek1 = random_dek();
-        let dek2 = random_dek();
-        let encrypted = encrypt_field(b"secret", &dek1).unwrap();
-        assert!(decrypt_field(&encrypted, &dek2).is_err());
+        let encrypted = encrypt_field(b"secret", &test_dek_a()).unwrap();
+        assert!(decrypt_field(&encrypted, &test_dek_b()).is_err());
     }
 
     #[test]
@@ -185,8 +235,7 @@ mod tests {
 
     #[test]
     fn string_repr_round_trip() {
-        let dek = random_dek();
-        let field = encrypt_field(b"hello", &dek).unwrap();
+        let field = encrypt_field(b"hello", &test_dek_a()).unwrap();
         let s = field.to_string_repr();
         assert!(s.starts_with("v1."));
         let parsed = EncryptedField::from_str(&s).unwrap();
@@ -211,7 +260,7 @@ mod tests {
 
     #[test]
     fn tampered_ciphertext_fails_auth() {
-        let dek = random_dek();
+        let dek = test_dek_a();
         let mut field = encrypt_field(b"tamper me", &dek).unwrap();
         // Flip a byte in the ciphertext to simulate tampering.
         field.ciphertext[0] ^= 0xFF;
