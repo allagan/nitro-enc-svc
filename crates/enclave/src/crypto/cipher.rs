@@ -113,8 +113,8 @@ pub enum CipherError {
 /// AES-GCM-SIV is nonce-misuse-resistant (RFC 8452 §3): reusing the same nonce
 /// for the same plaintext is safe and is the intended use case here.
 fn derive_nonce(dek: &[u8], plaintext: &[u8]) -> [u8; NONCE_LEN] {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(dek)
-        .expect("HMAC accepts keys of any length");
+    let mut mac =
+        <Hmac<Sha256> as Mac>::new_from_slice(dek).expect("HMAC accepts keys of any length");
     mac.update(plaintext);
     let result = mac.finalize().into_bytes();
     let mut nonce = [0u8; NONCE_LEN];
@@ -208,7 +208,10 @@ mod tests {
         let dek = test_dek_a();
         let a = encrypt_field(b"4111111111111111", &dek).unwrap();
         let b = encrypt_field(b"5500005555555559", &dek).unwrap();
-        assert_ne!(a.nonce, b.nonce, "different plaintexts must produce different nonces");
+        assert_ne!(
+            a.nonce, b.nonce,
+            "different plaintexts must produce different nonces"
+        );
         assert_ne!(a.ciphertext, b.ciphertext);
     }
 
@@ -217,7 +220,10 @@ mod tests {
         let plaintext = b"Jane Smith";
         let a = encrypt_field(plaintext, &test_dek_a()).unwrap();
         let b = encrypt_field(plaintext, &test_dek_b()).unwrap();
-        assert_ne!(a.nonce, b.nonce, "different DEKs must produce different nonces");
+        assert_ne!(
+            a.nonce, b.nonce,
+            "different DEKs must produce different nonces"
+        );
         assert_ne!(a.ciphertext, b.ciphertext);
     }
 
