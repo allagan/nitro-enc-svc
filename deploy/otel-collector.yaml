@@ -50,6 +50,16 @@ data:
         timeout: 5s
         send_batch_size: 512
 
+      # Drop NLB health-check noise: the NLB sends raw TCP probes every ~10s.
+      # The enclave's TLS server fails the handshake (no ClientHello) and logs
+      # a WARN. This filter discards those records before they reach CloudWatch.
+      filter/drop_nlb_noise:
+        logs:
+          exclude:
+            match_type: regexp
+            bodies:
+              - '"message":"TLS handshake failed"'
+
       # Add enclave context attributes to all telemetry.
       resource:
         attributes:
@@ -84,7 +94,7 @@ data:
       pipelines:
         logs:
           receivers: [tcplog]
-          processors: [resource, batch]
+          processors: [resource, filter/drop_nlb_noise, batch]
           exporters: [awscloudwatchlogs, debug]
         traces:
           receivers: [otlp]

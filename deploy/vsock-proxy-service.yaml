@@ -86,6 +86,10 @@ metadata:
     service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
 spec:
   type: LoadBalancer
+  # Only route to nodes with a running vsock-proxy pod — eliminates the kube-proxy
+  # cross-node hop that caused intermittent timeouts when the NLB targeted the
+  # general-purpose node. Also preserves the client source IP (no SNAT).
+  externalTrafficPolicy: Local
   selector:
     app: vsock-proxy
   ports:
