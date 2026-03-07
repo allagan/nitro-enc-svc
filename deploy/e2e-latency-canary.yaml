@@ -1,0 +1,156 @@
+# End-to-end latency canary — runs every minute on the general node,
+# measures round-trip latency through the full NLB → vsock-proxy → enclave path,
+# and publishes the result as a CloudWatch custom metric.
+#
+# Requires cloudwatch:PutMetricData on the general node IAM role
+# (see terraform/iam.tf — general_node_cloudwatch_metrics policy).
+#
+# Node placement: general node (ip-10-0-53-90) — NOT the nitro node —
+# to avoid the NLB hairpin restriction (EC2 targets cannot loop back
+# through the NLB they are registered with).
+#
+# Apply with:
+#   kubectl apply -f deploy/e2e-latency-canary.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: e2e-latency-canary
+  namespace: nitro-enc-svc
+  labels:
+    app: e2e-latency-canary
+spec:
+  schedule: "* * * * *"       # Every minute
+  concurrencyPolicy: Forbid   # Drop if previous is still running
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # Give up after 50 s so we never block the next minute's run.
+      activeDeadlineSeconds: 50
+      template:
+        metadata:
+          labels:
+            app: e2e-latency-canary
+        spec:
+          # Pin to the general node — the one that can reach the NLB
+          # without hitting the hairpin restriction.
+          nodeSelector:
+            kubernetes.io/hostname: ip-10-0-53-90.us-east-2.compute.internal
+          tolerations:
+            - operator: Exists
+          serviceAccountName: nitro-enclave-runner
+          restartPolicy: Never
+          containers:
+            - name: canary
+              image: public.ecr.aws/aws-cli/aws-cli:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: NLB
+                  value: "a91838215fffe476d835e33a202ccd7e-75f088c3cff040c2.elb.us-east-2.amazonaws.com"
+                - name: PORT
+                  value: "8443"
+                - name: AWS_DEFAULT_REGION
+                  value: "us-east-2"
+                - name: CW_NAMESPACE
+                  value: "NitroEncSvc/Dev"
+                - name: SAMPLES
+                  value: "10"
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  python3 - << 'PYEOF'
+                  import os, ssl, time, json, urllib.request, urllib.error
+
+                  nlb     = os.environ["NLB"]
+                  port    = int(os.environ["PORT"])
+                  region  = os.environ["AWS_DEFAULT_REGION"]
+                  ns      = os.environ["CW_NAMESPACE"]
+                  samples = int(os.environ["SAMPLES"])
+
+                  payload = json.dumps({
+                      "payload": {
+                          "card_number":      "4111111111111111",
+                          "card_holder_name": "Canary Test",
+                          "billing_address": {
+                              "street": "1 Canary Lane",
+                              "city":   "Columbus",
+                              "zip":    "43215"
+                          }
+                      }
+                  }).encode()
+
+                  # Disable TLS verification — self-signed cert in enclave dev build
+                  ctx = ssl.create_default_context()
+                  ctx.check_hostname = False
+                  ctx.verify_mode    = ssl.CERT_NONE
+
+                  url = f"https://{nlb}:{port}/encrypt"
+                  headers = {
+                      "Content-Type":   "application/json",
+                      "X-Schema-Name":  "payments-v1",
+                  }
+
+                  latencies = []
+                  errors    = 0
+
+                  for i in range(samples):
+                      req = urllib.request.Request(url, data=payload, headers=headers)
+                      t0 = time.monotonic()
+                      try:
+                          with urllib.request.urlopen(req, context=ctx, timeout=8) as resp:
+                              resp.read()
+                          ms = (time.monotonic() - t0) * 1000.0
+                          latencies.append(ms)
+                          print(f"sample {i+1}: {ms:.2f} ms", flush=True)
+                      except Exception as e:
+                          errors += 1
+                          print(f"sample {i+1}: ERROR {e}", flush=True)
+
+                  if not latencies:
+                      print("All samples failed — no metric published", flush=True)
+                      raise SystemExit(1)
+
+                  avg = sum(latencies) / len(latencies)
+                  mn  = min(latencies)
+                  mx  = max(latencies)
+                  srt = sorted(latencies)
+                  p50 = srt[len(srt) // 2]
+                  p99 = srt[int(len(srt) * 0.99)]
+
+                  print(f"avg={avg:.2f}ms min={mn:.2f}ms p50={p50:.2f}ms p99={p99:.2f}ms max={mx:.2f}ms errors={errors}", flush=True)
+
+                  # Publish via aws-cli (avoids boto3 dependency uncertainty)
+                  import subprocess, sys
+                  metric_data = json.dumps([
+                      {
+                          "MetricName": "e2e_latency_ms",
+                          "Value":      round(avg, 3),
+                          "Unit":       "Milliseconds",
+                          "Dimensions": [{"Name": "type", "Value": "keepalive_canary"}]
+                      },
+                      {
+                          "MetricName": "e2e_latency_p99_ms",
+                          "Value":      round(p99, 3),
+                          "Unit":       "Milliseconds",
+                          "Dimensions": [{"Name": "type", "Value": "keepalive_canary"}]
+                      },
+                  ])
+                  result = subprocess.run(
+                      ["aws", "cloudwatch", "put-metric-data",
+                       "--namespace", ns,
+                       "--metric-data", metric_data,
+                       "--region", region],
+                      capture_output=True, text=True
+                  )
+                  if result.returncode != 0:
+                      print("put-metric-data failed:", result.stderr, flush=True)
+                      raise SystemExit(1)
+                  print("Published to CloudWatch", flush=True)
+                  PYEOF
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "128Mi"

@@ -48,6 +48,23 @@ resource "aws_iam_role_policy_attachment" "general_node_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+resource "aws_iam_role_policy" "general_node_cloudwatch_metrics" {
+  name = "general-node-cloudwatch-metrics"
+  role = aws_iam_role.general_node.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["cloudwatch:PutMetricData"]
+      Resource = "*"
+      Condition = {
+        StringEquals = { "cloudwatch:namespace" = "NitroEncSvc/Dev" }
+      }
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "general_node" {
   name = "${var.cluster_name}-general-node"
   role = aws_iam_role.general_node.name
