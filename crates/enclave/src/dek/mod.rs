@@ -21,6 +21,7 @@ pub mod store;
 pub use store::DekStore;
 
 use anyhow::{Context, Result};
+use opentelemetry::metrics::Counter;
 use tokio::time;
 use tracing::{info, warn};
 
@@ -79,7 +80,14 @@ pub async fn fetch_and_store(aws: &AwsClients, cfg: &Config, store: &DekStore) -
 /// The first rotation fires after one full interval (startup fetch is assumed
 /// to have already populated the store). On rotation failure the previous key
 /// is retained and a warning is emitted.
-pub fn rotation_task(aws: AwsClients, cfg: Config, store: DekStore) -> tokio::task::JoinHandle<()> {
+///
+/// `dek_rotations` is incremented on each successful rotation.
+pub fn rotation_task(
+    aws: AwsClients,
+    cfg: Config,
+    store: DekStore,
+    dek_rotations: Counter<u64>,
+) -> tokio::task::JoinHandle<()> {
     let interval = std::time::Duration::from_secs(cfg.dek_rotation_interval_secs);
     tokio::spawn(async move {
         let mut ticker = time::interval(interval);
@@ -88,7 +96,10 @@ pub fn rotation_task(aws: AwsClients, cfg: Config, store: DekStore) -> tokio::ta
         loop {
             ticker.tick().await;
             match fetch_and_store(&aws, &cfg, &store).await {
-                Ok(()) => info!("DEK rotated successfully"),
+                Ok(()) => {
+                    dek_rotations.add(1, &[]);
+                    info!("DEK rotated successfully");
+                }
                 Err(e) => warn!(error = %e, "DEK rotation failed; retaining previous key"),
             }
         }

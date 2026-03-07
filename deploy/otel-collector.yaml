@@ -78,6 +78,14 @@ data:
         region: us-east-2
         log_retention: 30
 
+      # OTLP metrics → CloudWatch Metrics via Embedded Metric Format.
+      # Metrics appear in the NitroEncSvc/Dev namespace.
+      awsemf:
+        namespace: NitroEncSvc/Dev
+        region: us-east-2
+        log_group_name: /nitro-enc-svc/dev/metrics
+        dimension_rollup_option: "NoDimensionRollup"
+
       # OTLP traces → AWS X-Ray (CloudWatch ServiceLens).
       awsxray:
         region: us-east-2
@@ -100,6 +108,10 @@ data:
           receivers: [otlp]
           processors: [resource, batch]
           exporters: [awsxray, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [resource, batch]
+          exporters: [awsemf, debug]
 ---
 apiVersion: apps/v1
 kind: DaemonSet

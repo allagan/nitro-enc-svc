@@ -23,6 +23,9 @@ pub async fn encrypt(
     headers: HeaderMap,
     Json(req): Json<EncryptRequest>,
 ) -> Response {
+    use crate::telemetry::Metrics;
+    let start = std::time::Instant::now();
+
     // Extract schema name from the configured header.
     let schema_name = match headers.get(state.schema_header_name.as_str()) {
         Some(v) => match v.to_str() {
@@ -35,6 +38,12 @@ pub async fn encrypt(
                         state.schema_header_name
                     ),
                 );
+                let attrs = Metrics::error_attrs();
+                state.metrics.encrypt_requests.add(1, &attrs);
+                state
+                    .metrics
+                    .encrypt_latency_ms
+                    .record(start.elapsed().as_secs_f64() * 1000.0, &attrs);
                 return (StatusCode::BAD_REQUEST, Json(err)).into_response();
             }
         },
@@ -43,6 +52,12 @@ pub async fn encrypt(
                 "bad_request",
                 format!("missing {} header", state.schema_header_name),
             );
+            let attrs = Metrics::error_attrs();
+            state.metrics.encrypt_requests.add(1, &attrs);
+            state
+                .metrics
+                .encrypt_latency_ms
+                .record(start.elapsed().as_secs_f64() * 1000.0, &attrs);
             return (StatusCode::BAD_REQUEST, Json(err)).into_response();
         }
     };
@@ -52,6 +67,12 @@ pub async fn encrypt(
         Ok(s) => s,
         Err(_) => {
             let err = ErrorResponse::new("bad_request", format!("unknown schema: {schema_name}"));
+            let attrs = Metrics::error_attrs();
+            state.metrics.encrypt_requests.add(1, &attrs);
+            state
+                .metrics
+                .encrypt_latency_ms
+                .record(start.elapsed().as_secs_f64() * 1000.0, &attrs);
             return (StatusCode::BAD_REQUEST, Json(err)).into_response();
         }
     };
@@ -61,6 +82,12 @@ pub async fn encrypt(
         Ok(d) => d,
         Err(_) => {
             let err = ErrorResponse::new("service_unavailable", "DEK not yet initialised");
+            let attrs = Metrics::error_attrs();
+            state.metrics.encrypt_requests.add(1, &attrs);
+            state
+                .metrics
+                .encrypt_latency_ms
+                .record(start.elapsed().as_secs_f64() * 1000.0, &attrs);
             return (StatusCode::SERVICE_UNAVAILABLE, Json(err)).into_response();
         }
     };
@@ -70,9 +97,21 @@ pub async fn encrypt(
     if let Err(e) = encrypt_pii_fields(&mut payload, &cached.pii_paths, &dek.0[..]) {
         warn!(error = %e, "encryption failed");
         let err = ErrorResponse::new("internal_error", "encryption failed");
+        let attrs = Metrics::error_attrs();
+        state.metrics.encrypt_requests.add(1, &attrs);
+        state
+            .metrics
+            .encrypt_latency_ms
+            .record(start.elapsed().as_secs_f64() * 1000.0, &attrs);
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response();
     }
 
+    let attrs = Metrics::success_attrs();
+    state.metrics.encrypt_requests.add(1, &attrs);
+    state
+        .metrics
+        .encrypt_latency_ms
+        .record(start.elapsed().as_secs_f64() * 1000.0, &attrs);
     (StatusCode::OK, Json(EncryptResponse { payload })).into_response()
 }
 

@@ -11,5 +11,7 @@
 
 pub mod init;
 pub mod log_writer;
+pub mod metrics;
 
 pub use init::init_telemetry;
+pub use metrics::Metrics;

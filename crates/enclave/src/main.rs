@@ -26,10 +26,13 @@ use tokio_vsock::{VsockAddr, VsockListener, VsockStream, VMADDR_CID_ANY};
 use tower::ServiceExt as _;
 use tracing::{error, info, warn};
 
+use std::sync::Arc;
+
 use config::Config;
 use dek::DekStore;
 use schema::SchemaCache;
 use server::state::AppState;
+use telemetry::Metrics;
 
 /// Spawn a background task that bridges TCP 127.0.0.1:4317 → vsock(parent_cid, 4317).
 ///
@@ -266,13 +269,24 @@ async fn main() -> Result<()> {
     schema::load_all(&aws, &cfg, &schema_cache).await?;
 
     // -----------------------------------------------------------------------
-    // 7. Background tasks
+    // 7. Metrics instruments
     // -----------------------------------------------------------------------
-    let _dek_rotation = dek::rotation_task(aws.clone(), cfg.clone(), dek_store.clone());
+    let meter = opentelemetry::global::meter("nitro-enc-svc");
+    let metrics = Arc::new(Metrics::new(&meter));
+
+    // -----------------------------------------------------------------------
+    // 8. Background tasks
+    // -----------------------------------------------------------------------
+    let _dek_rotation = dek::rotation_task(
+        aws.clone(),
+        cfg.clone(),
+        dek_store.clone(),
+        metrics.dek_rotations.clone(),
+    );
     let _schema_refresh = schema::refresh_task(aws.clone(), cfg.clone(), schema_cache.clone());
 
     // -----------------------------------------------------------------------
-    // 8. TLS configuration (cert + key written by ACM for Nitro Enclaves)
+    // 9. TLS configuration (cert + key written by ACM for Nitro Enclaves)
     // -----------------------------------------------------------------------
     let cert_pem = std::fs::read(&cfg.tls_cert_path)
         .with_context(|| format!("failed to read TLS cert: {}", cfg.tls_cert_path))?;
@@ -282,9 +296,14 @@ async fn main() -> Result<()> {
     let tls_acceptor = TlsAcceptor::from(tls_cfg);
 
     // -----------------------------------------------------------------------
-    // 9. HTTPS server (TLS accept loop)
+    // 10. HTTPS server (TLS accept loop)
     // -----------------------------------------------------------------------
-    let state = AppState::new(dek_store, schema_cache, cfg.schema_header_name.clone());
+    let state = AppState::new(
+        dek_store,
+        schema_cache,
+        cfg.schema_header_name.clone(),
+        metrics,
+    );
     let router = server::router::build(state);
 
     // Nitro Enclaves have no external network interface — the only way the
