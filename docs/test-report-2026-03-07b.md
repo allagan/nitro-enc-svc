@@ -1,23 +1,25 @@
-# Encryption API Test Report — 2026-03-07 (OTEL Metrics Rollout)
+# Encryption API Test Report — 2026-03-07 (OTEL Metrics + Benchmark Rollout)
 
 ## Environment
 
 | Item | Value |
 |---|---|
-| Enclave image | `runner:ecb180f` |
+| Enclave image | `runner:1910780` |
 | EKS cluster | `nitro-enc-svc-dev` (us-east-2) |
 | NLB endpoint | `a91838215fffe476d835e33a202ccd7e-75f088c3cff040c2.elb.us-east-2.amazonaws.com:8443` |
 | Schema under test | `payments-v1` (from S3) |
-| Test method | `curl` via AWS SSM `send-command` to general node (i-0f59535d0c9dc6cfc) |
+| Test method | `curl` + `ab` via AWS SSM `send-command` to general node (i-0f59535d0c9dc6cfc) |
 | Previous report | `docs/test-report-2026-03-07.md` (16/16 PASS on image 20288b0) |
 
-**Changes since last report:**
+**Changes since last report (ecb180f → 1910780):**
 - OTEL metrics pipeline added: `SdkMeterProvider` with OTLP/gRPC exporter (15 s export interval)
 - New `telemetry/metrics.rs`: `encrypt_requests` counter, `encrypt_latency_ms` histogram, `dek_rotations` counter
 - `/encrypt` handler instrumented — every exit path (success + all error paths) records counter + latency
 - `rotation_task` increments `dek_rotations` on each successful background rotation
 - OTEL Collector updated: `awsemf` exporter → CloudWatch namespace `NitroEncSvc/Dev`
-- CloudWatch dashboard `NitroEncSvc-Dev` created with 7 widgets
+- CloudWatch dashboard `NitroEncSvc-Dev` created with 7 widgets (fixed: OTelLib dimension, logGroupNames, Average/Maximum latency stats)
+- **HTTP/1.1 keep-alive fix**: Added `alpn_protocols = ["http/1.1", "h2"]` to rustls ServerConfig
+- **CompressionLayer removed**: was forcing `Transfer-Encoding: chunked` (no `Content-Length`), breaking keep-alive and load testers
 
 **Unit test suite:** 63/63 PASS (`cargo test --workspace`)
 
@@ -129,14 +131,28 @@ Three consecutive calls with `card_number: 4111111111111111`:
 
 ---
 
-### T-08 — Load Test (500 Requests)
-**Method:** 500 sequential `POST /encrypt` calls via NLB from general node
-**Result: PASS** — 500/500 success, 0 errors.
+### T-08 — Load Test (Apache Benchmark — Keep-Alive)
+**Tool:** `ab 2.3` (httpd-tools) from general node (i-0f59535d0c9dc6cfc)
+**Endpoint:** NLB → vsock-proxy → Nitro Enclave (TLS terminating in enclave)
+
+| Concurrency | Requests | TPS | Mean latency (ms) | Failed |
+|---|---|---|---|---|
+| 10  | 1,000  | **9,036**  | 1.1 | **0** |
+| 50  | 5,000  | **14,420** | 3.5 | **0** |
+| 100 | 10,000 | **15,030** | 6.7 | **0** |
+
+Response: `HTTP/1.1 200 OK`, `content-length: 113` — all responses identical length, zero failures.
+
+**Note:** At c=100, the 2-vCPU test client was saturated — the enclave is not the bottleneck.
+Encryption-only path (from CloudWatch EMF) averages **0.015 ms**; practical enclave ceiling
+estimated at 20,000–40,000 TPS with sufficient client workers.
+
+**Result: PASS** — 15,030 TPS with zero failures, well above the 1,000s TPS target.
 
 ---
 
 ### T-09 — Latency (End-to-End via NLB)
-10 requests measured with `curl --write-out '%{time_total}'`:
+10 requests measured with `curl --write-out '%{time_total}'` (new TLS per request):
 
 | Request | Total time (s) |
 |---|---|
@@ -151,16 +167,18 @@ Three consecutive calls with `card_number: 4111111111111111`:
 | 9 | 0.0460 |
 | 10 | 0.0499 |
 
-**p50 ≈ 51 ms, p99 ≈ 66 ms (end-to-end including NLB + TLS + vsock)**
+**p50 ≈ 51 ms, p99 ≈ 66 ms (end-to-end including NLB + TLS handshake + vsock)**
 
-**Encryption-only latency** (from CloudWatch EMF — 84,120 samples):
+With keep-alive (ab, c=10): **1.1 ms mean end-to-end** (no TLS handshake per request).
+
+**Encryption-only latency** (from CloudWatch EMF — 1,880,048 samples):
 
 | Stat | Value |
 |---|---|
-| Average | 0.024 ms |
-| Maximum | 0.038 ms |
+| Average | 0.015 ms |
+| Maximum observed | 0.965 ms |
 
-**Result: PASS** — Encryption path p99 < 0.04 ms; well within the < 5 ms target.
+**Result: PASS** — Encryption path p99 < 1 ms; well within the < 5 ms target.
 
 ---
 
@@ -174,8 +192,6 @@ Three consecutive calls with `card_number: 4111111111111111`:
 | `vsock-proxy` | 5 | PASS |
 | **Total** | **63** | **PASS** |
 
-New test added: `telemetry::metrics::tests::metrics_new_does_not_panic` — verifies `Metrics::new()` is safe with the no-op global meter provider (used in tests without initializing OTEL).
-
 **Result: PASS** — 63/63.
 
 ---
@@ -188,15 +204,42 @@ New test added: `telemetry::metrics::tests::metrics_new_does_not_panic` — veri
 |---|---|---|
 | Encrypt Requests / min | `enclave_encrypt_requests` (Sum, 60s) | ✅ Data visible |
 | Error Rate % | Expression over success/error counters | ✅ Data visible |
-| Latency p50/p95/p99 | `enclave_encrypt_latency_ms` percentiles | ✅ Data visible |
+| Latency Average / Max | `enclave_encrypt_latency_ms` (Average, Maximum) | ✅ Data visible |
 | DEK Rotations | `enclave_dek_rotations` (Sum, 24h) | ✅ Data visible |
 | Total Requests (today) | `enclave_encrypt_requests` (Sum, 24h) | ✅ Data visible |
 | Log Events / min | Logs Insights on `/nitro-enc-svc/dev/enclave` | ✅ |
 | Recent Errors/Warnings | Logs Insights filter on ERROR\|WARN | ✅ |
 
-**Root cause of initial empty dashboard:** The `awsemf` exporter automatically adds an `OTelLib` dimension. The initial dashboard widgets omitted this dimension, so metric queries returned no data. Fixed by adding `OTelLib=nitro-enc-svc` to all widget metric arrays.
+**Root causes fixed during dashboard bring-up:**
 
-**Result: PASS** — All widgets populated after dimension fix.
+| # | Issue | Fix |
+|---|---|---|
+| 1 | `awsemf` exporter auto-adds `OTelLib` dimension; initial widgets omitted it | Added `OTelLib=nitro-enc-svc` to all widget metric arrays |
+| 2 | Log Insights widget used `SOURCE '...'` in query string → API rejected it | Moved log group to `logGroupNames` array; removed `SOURCE` from query |
+| 3 | Latency widget used `p50/p95/p99` stats → no data (EMF exports aggregated, not raw samples) | Switched to `Average` and `Maximum` statistics |
+
+**Result: PASS** — All widgets populated after fixes.
+
+---
+
+### T-12 — HTTP/1.1 Keep-Alive (ALPN + Content-Length)
+**Verified via:** `curl -vsk https://<NLB>:8443/health 2>&1 | grep -E "ALPN|HTTP/"`
+**Output:**
+```
+* ALPN: server accepted http/1.1
+< HTTP/1.1 200 OK
+```
+**Response headers:** `content-type: application/json`, `content-length: ...` (no `transfer-encoding: chunked`)
+
+**Root causes fixed:**
+
+| # | Root Cause | Symptom | Fix | Commit |
+|---|---|---|---|---|
+| 1 | No ALPN on `rustls::ServerConfig` | Server returned HTTP/1.0; keep-alive impossible | `alpn_protocols = ["http/1.1", "h2"]` | `df908a2` |
+| 2 | `h2` listed first in ALPN → server selected HTTP/2 | `ab` negotiated h2 but can't speak it; ~65% failures | Reorder to `["http/1.1", "h2"]` | `04d67e8` |
+| 3 | `CompressionLayer` in Axum router | `Transfer-Encoding: chunked` (no `Content-Length`); ab counted every response as failed | Remove `CompressionLayer` | `1910780` |
+
+**Result: PASS** — HTTP/1.1 with `content-length` on every response; zero ab failures.
 
 ---
 
@@ -211,9 +254,10 @@ New test added: `telemetry::metrics::tests::metrics_new_does_not_panic` — veri
 | T-05 | Determinism | PASS |
 | T-06 | Encrypted value format | PASS |
 | T-07 | OTEL metrics in CloudWatch | PASS |
-| T-08 | Load test 500 requests | PASS |
+| T-08 | Load test — 15,030 TPS, 0 failures | PASS |
 | T-09 | Latency (end-to-end + encryption-only) | PASS |
 | T-10 | Unit test suite 63/63 | PASS |
 | T-11 | CloudWatch dashboard | PASS |
+| T-12 | HTTP/1.1 keep-alive (ALPN + Content-Length) | PASS |
 
-**11/11 PASS on image `ecb180f`**
+**12/12 PASS on image `1910780`**
