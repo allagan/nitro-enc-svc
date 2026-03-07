@@ -31,11 +31,16 @@ pub fn build_server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<Server
         .with_single_cert(certs, key)
         .context("failed to build rustls ServerConfig")?;
 
-    // Advertise HTTP/2 and HTTP/1.1 via TLS ALPN so hyper negotiates HTTP/1.1+
-    // (enabling keep-alive / persistent connections) and HTTP/2 when available.
-    // Without this rustls completes the handshake with no protocol selected and
-    // hyper falls back to HTTP/1.0, which does not support connection reuse.
-    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    // Advertise HTTP/1.1 then HTTP/2 via TLS ALPN. The server selects based on
+    // its own order, so HTTP/1.1 is always preferred. This enables keep-alive /
+    // persistent connections (fixing the HTTP/1.0 fallback) while still allowing
+    // HTTP/2 negotiation for clients that explicitly require it.
+    //
+    // http/1.1 is listed first because several HTTP/1.x-only tools (e.g. ab)
+    // send an ALPN extension and would receive h2 if it were preferred, causing
+    // protocol mismatches. With http/1.1 first, all HTTP/1.x clients negotiate
+    // correctly and true h2 clients (gRPC, browsers) still negotiate h2.
+    config.alpn_protocols = vec![b"http/1.1".to_vec(), b"h2".to_vec()];
 
     Ok(Arc::new(config))
 }
