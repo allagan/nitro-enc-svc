@@ -26,10 +26,16 @@ pub fn build_server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<Arc<Server
         .context("failed to read TLS private key")?
         .context("no private key found in PEM data")?;
 
-    let config = ServerConfig::builder()
+    let mut config = ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .context("failed to build rustls ServerConfig")?;
+
+    // Advertise HTTP/2 and HTTP/1.1 via TLS ALPN so hyper negotiates HTTP/1.1+
+    // (enabling keep-alive / persistent connections) and HTTP/2 when available.
+    // Without this rustls completes the handshake with no protocol selected and
+    // hyper falls back to HTTP/1.0, which does not support connection reuse.
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(Arc::new(config))
 }
