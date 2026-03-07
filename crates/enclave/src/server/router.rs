@@ -4,7 +4,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use tower_http::{compression::CompressionLayer, timeout::TimeoutLayer, trace::TraceLayer};
+use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
 use super::{handlers, middleware, state::AppState};
 
@@ -16,7 +16,10 @@ pub fn build(state: AppState) -> Router {
         .fallback(handlers::not_found)
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::new(middleware::REQUEST_TIMEOUT))
-        .layer(CompressionLayer::new())
+        // No CompressionLayer: callers are internal services, not browsers.
+        // Compression forces Transfer-Encoding: chunked (no Content-Length),
+        // which prevents ab-style load testers from using keep-alive cleanly
+        // and adds CPU overhead for no gain on already-small JSON payloads.
         .with_state(state)
 }
 
