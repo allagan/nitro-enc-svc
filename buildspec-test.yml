@@ -16,7 +16,7 @@ phases:
         curl -Lo /usr/local/bin/kubectl \
           "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl"
         chmod +x /usr/local/bin/kubectl
-      - yum install -y httpd-tools  # provides ab
+      - apt-get install -y apache2-utils  # provides ab
 
   pre_build:
     commands:
