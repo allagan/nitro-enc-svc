@@ -229,6 +229,193 @@ resource "aws_iam_role_policy" "ebs_csi_kms" {
   })
 }
 
+# ── Karpenter controller role (Pod Identity) ──────────────────────────────────
+
+resource "aws_iam_role" "karpenter_controller" {
+  name = "${var.cluster_name}-karpenter-controller"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "pods.eks.amazonaws.com" }
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "karpenter_controller" {
+  name = "karpenter-controller"
+  role = aws_iam_role.karpenter_controller.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:CreateFleet",
+          "ec2:CreateLaunchTemplate",
+          "ec2:CreateTags",
+          "ec2:DeleteLaunchTemplate",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeImages",
+          "ec2:DescribeInstanceTypeOfferings",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeInstances",
+          "ec2:DescribeLaunchTemplates",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSpotPriceHistory",
+          "ec2:DescribeSubnets",
+          "ec2:RunInstances",
+          "ec2:TerminateInstances",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = aws_iam_role.enclave_node.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:CreateInstanceProfile",
+          "iam:DeleteInstanceProfile",
+          "iam:GetInstanceProfile",
+          "iam:AddRoleToInstanceProfile",
+          "iam:RemoveRoleFromInstanceProfile",
+          "iam:TagInstanceProfile",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "eks:DescribeCluster",
+          "ssm:GetParameter",
+          "pricing:GetProducts",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+resource "aws_eks_pod_identity_association" "karpenter" {
+  cluster_name    = aws_eks_cluster.main.name
+  namespace       = "kube-system"
+  service_account = "karpenter"
+  role_arn        = aws_iam_role.karpenter_controller.arn
+
+  depends_on = [aws_eks_addon.pod_identity_agent]
+}
+
+# ── Test CodeBuild role (kubectl + NLB access for post-deploy smoke tests) ────
+
+resource "aws_iam_role" "codebuild_test" {
+  name = "${var.cluster_name}-codebuild-test"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "codebuild.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "codebuild_test_logs" {
+  name = "codebuild-test-logs"
+  role = aws_iam_role.codebuild_test.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+      ]
+      Resource = "arn:aws:logs:${var.aws_region}:${var.account_id}:log-group:/aws/codebuild/nitro-enc-svc-${var.environment}-test*"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "codebuild_test_s3" {
+  name = "codebuild-test-s3"
+  role = aws_iam_role.codebuild_test.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:GetObjectVersion"]
+        Resource = "${aws_s3_bucket.pipeline_artifacts.arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:GetBucketLocation"
+        Resource = aws_s3_bucket.pipeline_artifacts.arn
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "codebuild_test_eks" {
+  name = "codebuild-test-eks"
+  role = aws_iam_role.codebuild_test.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "eks:DescribeCluster"
+      Resource = "arn:aws:eks:${var.aws_region}:${var.account_id}:cluster/${var.cluster_name}"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "codebuild_test_vpc" {
+  name = "codebuild-test-vpc"
+  role = aws_iam_role.codebuild_test.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ec2:CreateNetworkInterface",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DeleteNetworkInterface",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeDhcpOptions",
+        "ec2:DescribeVpcs",
+        "ec2:CreateNetworkInterfacePermission",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "codebuild_test_kms" {
+  name = "codebuild-test-kms"
+  role = aws_iam_role.codebuild_test.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = ["kms:Decrypt", "kms:GenerateDataKey"]
+      Resource = aws_kms_key.enclave_dek.arn
+    }]
+  })
+}
+
 # ── CodeBuild role ────────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "codebuild" {
@@ -400,7 +587,10 @@ resource "aws_iam_role_policy" "codepipeline_policy" {
           "codebuild:StartBuild",
           "codebuild:BatchGetBuilds",
         ]
-        Resource = aws_codebuild_project.build.arn
+        Resource = [
+          aws_codebuild_project.build.arn,
+          aws_codebuild_project.test.arn,
+        ]
       },
       {
         Effect   = "Allow"

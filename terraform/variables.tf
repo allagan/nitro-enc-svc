@@ -101,22 +101,10 @@ variable "nitro_instance_types" {
   default     = ["c5.xlarge"]
 }
 
-variable "nitro_desired_size" {
-  description = "Desired number of Nitro Enclave nodes."
-  type        = number
-  default     = 2
-}
-
-variable "nitro_min_size" {
-  description = "Minimum number of Nitro Enclave nodes."
-  type        = number
-  default     = 1
-}
-
-variable "nitro_max_size" {
-  description = "Maximum number of Nitro Enclave nodes."
-  type        = number
-  default     = 4
+variable "karpenter_version" {
+  description = "Version of the Karpenter Helm chart to install."
+  type        = string
+  default     = "1.2.1"
 }
 
 # ── Enclave runtime ───────────────────────────────────────────────────────────

@@ -1,0 +1,109 @@
+# EC2NodeClass for Karpenter-managed Nitro Enclave nodes.
+#
+# Karpenter uses this to provision c5.xlarge instances with Nitro Enclaves
+# enabled. The userData runs before Karpenter's bootstrap call and sets up:
+#   - nitro-enclaves-allocator (memory/CPU reservation)
+#   - aws-vsock-proxy allowlist
+#   - 6 systemd units (one per AWS endpoint) for vsock-proxy
+#
+# Note: Karpenter (AL2 AMI family) appends /etc/eks/bootstrap.sh automatically;
+# the userData below must NOT call it.
+---
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: nitro
+spec:
+  amiFamily: AL2
+  # IAM role assumed by Karpenter-provisioned nodes.
+  # Karpenter creates and manages the corresponding instance profile.
+  role: "nitro-enc-svc-dev-enclave-node"
+
+  # Select private subnets tagged for this cluster.
+  subnetSelectorTerms:
+    - tags:
+        kubernetes.io/cluster/nitro-enc-svc-dev: shared
+        kubernetes.io/role/internal-elb: "1"
+
+  # Select the EKS cluster security group (auto-created by EKS, tagged with cluster name).
+  securityGroupSelectorTerms:
+    - tags:
+        aws:eks:cluster-name: nitro-enc-svc-dev
+
+  # Required for Nitro Enclaves support on the instance.
+  nitroEnclavesEnabled: true
+
+  # IMDSv2 required, hop limit 2 so pods can reach IMDS for credentials.
+  metadataOptions:
+    httpTokens: required
+    httpPutResponseHopLimit: 2
+    httpEndpoint: enabled
+
+  # Encrypted root volume.
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeType: gp3
+        volumeSize: 50Gi
+        encrypted: true
+        deleteOnTermination: true
+
+  # userData runs before Karpenter's bootstrap script.
+  # Sets up the nitro-enclaves-allocator and aws-vsock-proxy systemd units.
+  userData: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Install Nitro Enclaves CLI
+    amazon-linux-extras install -y aws-nitro-enclaves-cli
+    yum install -y aws-nitro-enclaves-cli-devel
+
+    # Configure nitro-enclaves-allocator
+    cat > /etc/nitro_enclaves/allocator.yaml <<ALLOC
+    ---
+    memory_mib: 2048
+    cpu_count: 2
+    ALLOC
+
+    systemctl enable nitro-enclaves-allocator
+    systemctl restart nitro-enclaves-allocator
+
+    # Configure aws-vsock-proxy allowlist
+    cat > /etc/nitro_enclaves/vsock-proxy.yaml <<ALLOWLIST
+    ---
+    allowlist:
+      - {address: kms.us-east-2.amazonaws.com, port: 443}
+      - {address: secretsmanager.us-east-2.amazonaws.com, port: 443}
+      - {address: s3.us-east-2.amazonaws.com, port: 443}
+      - {address: 169.254.169.254, port: 80}
+      - {address: 127.0.0.1, port: 4317}
+      - {address: 127.0.0.1, port: 4318}
+    ALLOWLIST
+
+    # Create aws-vsock-proxy systemd units
+    declare -A PROXIES
+    PROXIES["nitro-vsock-kms"]="8001 kms.us-east-2.amazonaws.com 443"
+    PROXIES["nitro-vsock-sm"]="8002 secretsmanager.us-east-2.amazonaws.com 443"
+    PROXIES["nitro-vsock-s3"]="8003 s3.us-east-2.amazonaws.com 443"
+    PROXIES["nitro-vsock-imds"]="8004 169.254.169.254 80"
+    PROXIES["nitro-vsock-otlp"]="4317 127.0.0.1 4317"
+    PROXIES["nitro-vsock-logs"]="4318 127.0.0.1 4318"
+
+    for NAME in "${!PROXIES[@]}"; do
+      read -r VSOCK_PORT REMOTE_HOST REMOTE_PORT <<< "${PROXIES[$NAME]}"
+      cat > /etc/systemd/system/$NAME.service <<UNIT
+    [Unit]
+    Description=Nitro vsock-proxy $NAME
+    After=network.target
+
+    [Service]
+    ExecStart=/usr/bin/vsock-proxy $VSOCK_PORT $REMOTE_HOST $REMOTE_PORT --config /etc/nitro_enclaves/vsock-proxy.yaml
+    Restart=always
+    RestartSec=5
+
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+      systemctl enable "$NAME"
+      systemctl start "$NAME"
+    done

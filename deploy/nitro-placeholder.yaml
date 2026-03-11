@@ -1,0 +1,48 @@
+# Nitro placeholder Deployment — keeps 2 Karpenter nodes alive.
+#
+# Karpenter only provisions nodes when pods need scheduling. Since DaemonSets
+# don't trigger provisioning (they run on existing nodes), we need a non-DaemonSet
+# workload to signal "provision 2 nodes across 2 AZs and keep them running."
+#
+# The topologySpreadConstraints force one replica per AZ, which drives Karpenter
+# to provision a node in each of us-east-2a and us-east-2b.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nitro-placeholder
+  namespace: nitro-enc-svc
+  labels:
+    app: nitro-placeholder
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nitro-placeholder
+  template:
+    metadata:
+      labels:
+        app: nitro-placeholder
+    spec:
+      nodeSelector:
+        aws.amazon.com/nitro-enclaves: "true"
+      tolerations:
+        - operator: Exists
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          minDomains: 2
+          labelSelector:
+            matchLabels:
+              app: nitro-placeholder
+      containers:
+        - name: pause
+          image: public.ecr.aws/eks-distro/kubernetes/pause:3.9
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"

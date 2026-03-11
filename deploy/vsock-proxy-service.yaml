@@ -1,14 +1,13 @@
-# vsock-proxy Deployment + NLB Service for external/bastion access.
+# vsock-proxy DaemonSet + NLB Service.
 #
 # The vsock-proxy container accepts HTTPS (TLS pass-through) on port 8443,
 # forwards it to the Nitro Enclave at vsock(16, 443), and returns the response.
 # TLS terminates inside the enclave; this proxy only sees encrypted bytes.
 #
-# The Service creates an internal AWS Network Load Balancer (NLB) accessible
-# from within the VPC — including any bastion host in the same VPC.
-#
-# IMPORTANT: The pod MUST run on the Nitro Enclave node (same EC2 instance)
-# because vsock connections are node-local. The nodeSelector ensures this.
+# DaemonSet (not Deployment): one pod per nitro node ensures each enclave node
+# has a local proxy. With externalTrafficPolicy: Local on the Service, the NLB
+# routes each connection to the node that received it, which then hits its
+# local enclave — no cross-node vsock hop.
 #
 # Usage from bastion:
 #   NLB_DNS=$(kubectl get svc -n nitro-enc-svc vsock-proxy-nlb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
@@ -19,14 +18,13 @@
 #     -d '{"payload":{"card_number":"4111111111111111","card_holder_name":"Jane Smith"}}'
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: vsock-proxy
   namespace: nitro-enc-svc
   labels:
     app: vsock-proxy
 spec:
-  replicas: 1
   selector:
     matchLabels:
       app: vsock-proxy

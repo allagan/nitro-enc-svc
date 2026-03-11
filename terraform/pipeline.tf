@@ -1,4 +1,4 @@
-# ── CodeBuild log group ───────────────────────────────────────────────────────
+# ── CodeBuild log groups ──────────────────────────────────────────────────────
 
 resource "aws_cloudwatch_log_group" "codebuild" {
   name              = "/aws/codebuild/nitro-enc-svc-${var.environment}"
@@ -6,6 +6,15 @@ resource "aws_cloudwatch_log_group" "codebuild" {
 
   tags = {
     Name = "nitro-enc-svc-${var.environment}-codebuild"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "codebuild_test" {
+  name              = "/aws/codebuild/nitro-enc-svc-${var.environment}-test"
+  retention_in_days = 90
+
+  tags = {
+    Name = "nitro-enc-svc-${var.environment}-codebuild-test"
   }
 }
 
@@ -134,6 +143,75 @@ resource "aws_codebuild_project" "build" {
   }
 }
 
+# ── CodeBuild test project (VPC-enabled; reaches internal NLB for smoke tests) ─
+
+resource "aws_security_group" "codebuild_test" {
+  name        = "${var.cluster_name}-codebuild-test"
+  description = "Egress-only SG for the post-deploy test CodeBuild project"
+  vpc_id      = aws_vpc.main.id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.cluster_name}-codebuild-test"
+  }
+}
+
+resource "aws_codebuild_project" "test" {
+  name          = "nitro-enc-svc-${var.environment}-test"
+  description   = "Post-deploy smoke tests: health, encrypt, ab load test against the internal NLB"
+  service_role  = aws_iam_role.codebuild_test.arn
+  build_timeout = 30
+
+  vpc_config {
+    vpc_id             = aws_vpc.main.id
+    subnets            = aws_subnet.private[*].id
+    security_group_ids = [aws_security_group.codebuild_test.id]
+  }
+
+  source {
+    type      = "CODEPIPELINE"
+    buildspec = "buildspec-test.yml"
+  }
+
+  artifacts {
+    type = "CODEPIPELINE"
+  }
+
+  environment {
+    type         = "LINUX_CONTAINER"
+    compute_type = "BUILD_GENERAL1_SMALL"
+    image        = "aws/codebuild/standard:7.0"
+
+    environment_variable {
+      name  = "CLUSTER_NAME"
+      value = var.cluster_name
+    }
+
+    environment_variable {
+      name  = "AWS_REGION"
+      value = var.aws_region
+    }
+  }
+
+  logs_config {
+    cloudwatch_logs {
+      group_name  = aws_cloudwatch_log_group.codebuild_test.name
+      stream_name = "test"
+      status      = "ENABLED"
+    }
+  }
+
+  tags = {
+    Name = "nitro-enc-svc-${var.environment}-test"
+  }
+}
+
 # ── CodePipeline ──────────────────────────────────────────────────────────────
 
 resource "aws_codepipeline" "pipeline" {
@@ -207,6 +285,25 @@ resource "aws_codepipeline" "pipeline" {
 
       configuration = {
         CustomData = "Review enclave/build-summary.json — verify PCR0 matches expected value and update kms_enclave_pcr0 in Terraform before approving."
+      }
+    }
+  }
+
+  # ── Stage 4: Post-deploy smoke tests ──────────────────────────────────────
+
+  stage {
+    name = "DeployAndTest"
+
+    action {
+      name            = "RunTests"
+      category        = "Build"
+      owner           = "AWS"
+      provider        = "CodeBuild"
+      version         = "1"
+      input_artifacts = ["source_output"]
+
+      configuration = {
+        ProjectName = aws_codebuild_project.test.name
       }
     }
   }

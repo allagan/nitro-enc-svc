@@ -1,0 +1,116 @@
+version: 0.2
+
+# Post-deploy smoke tests for nitro-enc-svc.
+#
+# Runs inside the VPC (VPC-enabled CodeBuild project) so it can reach the
+# internal NLB. Waits for DaemonSets to be ready, then runs:
+#   T-01  Health check  — GET /health → 200 {"status":"ok"}
+#   T-02  Encrypt round-trip — POST /encrypt with PII payload → ciphertext
+#   T-03  Load test  — ab keep-alive c=10 n=1000, zero failures required
+
+phases:
+  install:
+    commands:
+      - |
+        # kubectl
+        curl -Lo /usr/local/bin/kubectl \
+          "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl"
+        chmod +x /usr/local/bin/kubectl
+      - yum install -y httpd-tools  # provides ab
+
+  pre_build:
+    commands:
+      - aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+      - kubectl cluster-info
+      - |
+        echo "Waiting for nitro-enclave DaemonSet..."
+        kubectl rollout status daemonset/nitro-enclave \
+          -n nitro-enc-svc --timeout=300s
+      - |
+        echo "Waiting for vsock-proxy DaemonSet..."
+        kubectl rollout status daemonset/vsock-proxy \
+          -n nitro-enc-svc --timeout=300s
+      - |
+        NLB=$(kubectl get svc vsock-proxy-nlb -n nitro-enc-svc \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        echo "NLB hostname: $NLB"
+        if [ -z "$NLB" ]; then
+          echo "ERROR: NLB hostname not yet assigned"
+          exit 1
+        fi
+        echo "export NLB=$NLB" >> "$CODEBUILD_SRC_DIR/env.sh"
+      - source "$CODEBUILD_SRC_DIR/env.sh"
+      # Wait for NLB to be reachable (DNS propagation)
+      - |
+        source "$CODEBUILD_SRC_DIR/env.sh"
+        DEADLINE=$((SECONDS + 120))
+        while ! curl -sk --max-time 5 "https://$NLB:8443/health" > /dev/null 2>&1; do
+          [ $SECONDS -ge $DEADLINE ] && echo "ERROR: NLB not reachable after 120s" && exit 1
+          echo "Waiting for NLB to become reachable..."; sleep 10
+        done
+
+  build:
+    commands:
+      - source "$CODEBUILD_SRC_DIR/env.sh"
+
+      # T-01: Health check
+      - |
+        HEALTH=$(curl -sk --max-time 10 "https://$NLB:8443/health")
+        echo "T-01 response: $HEALTH"
+        echo "$HEALTH" | grep -q '"status":"ok"' \
+          && echo "T-01 PASS" \
+          || (echo "T-01 FAIL — unexpected health response" && exit 1)
+
+      # T-02: Encrypt round-trip
+      - |
+        RESP=$(curl -sk --max-time 10 -X POST "https://$NLB:8443/encrypt" \
+          -H "Content-Type: application/json" \
+          -H "X-Schema-Name: payments-v1" \
+          -d '{"payload":{"card_number":"4111111111111111","card_holder_name":"Test User","billing_address":{"street":"1 Test St","city":"Columbus","zip":"43215"}}}')
+        echo "T-02 response: $RESP"
+        echo "$RESP" | grep -q '"card_number":"v1\.' \
+          && echo "T-02 PASS" \
+          || (echo "T-02 FAIL — ciphertext not found in response" && exit 1)
+
+      # T-03: ab load test (keep-alive, c=10, n=1000)
+      - |
+        cat > /tmp/body.json <<'BODY'
+        {"payload":{"card_number":"4111111111111111","card_holder_name":"Load Test","billing_address":{"street":"1 Main St","city":"Columbus","zip":"43215"}}}
+        BODY
+        ab -k -c 10 -n 1000 \
+          -p /tmp/body.json \
+          -T "application/json" \
+          -H "X-Schema-Name: payments-v1" \
+          "https://$NLB:8443/encrypt" | tee /tmp/ab_output.txt
+        TPS=$(grep "Requests per second" /tmp/ab_output.txt | awk '{print $4}')
+        FAILED=$(grep "Failed requests" /tmp/ab_output.txt | awk '{print $3}')
+        echo "T-03: TPS=$TPS Failed=$FAILED"
+        [ "$FAILED" = "0" ] \
+          && echo "T-03 PASS" \
+          || (echo "T-03 FAIL — $FAILED failed requests" && exit 1)
+
+      # Write test report
+      - |
+        DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        cat > /tmp/test-report.json <<REPORT
+        {
+          "date": "$DATE",
+          "cluster": "$CLUSTER_NAME",
+          "nlb": "$NLB",
+          "results": {
+            "health": "PASS",
+            "encrypt": "PASS",
+            "load_tps": "$TPS",
+            "load_failed": "$FAILED"
+          }
+        }
+        REPORT
+        cat /tmp/test-report.json
+        echo "All tests passed."
+
+artifacts:
+  files:
+    - /tmp/test-report.json
+    - /tmp/ab_output.txt
+  name: test-results
+  discard-paths: yes

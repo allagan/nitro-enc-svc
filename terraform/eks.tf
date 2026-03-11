@@ -1,10 +1,3 @@
-# ── Data sources ──────────────────────────────────────────────────────────────
-
-# AL2 EKS-optimized AMI for the Nitro Enclave node group launch template
-data "aws_ssm_parameter" "eks_al2_ami" {
-  name = "/aws/service/eks/optimized-ami/${var.cluster_version}/amazon-linux-2/recommended/image_id"
-}
-
 # ── Control plane log group ───────────────────────────────────────────────────
 
 resource "aws_cloudwatch_log_group" "eks_cluster" {
@@ -96,106 +89,75 @@ resource "aws_eks_node_group" "general" {
   }
 }
 
-# ── Nitro Enclave launch template ─────────────────────────────────────────────
+# ── Karpenter (Helm) ──────────────────────────────────────────────────────────
 
-resource "aws_launch_template" "nitro_enclave" {
-  name_prefix = "${var.cluster_name}-nitro-"
-  description = "Launch template for EKS nodes with Nitro Enclave support"
+resource "helm_release" "karpenter" {
+  namespace        = "kube-system"
+  name             = "karpenter"
+  repository       = "oci://public.ecr.aws/karpenter"
+  chart            = "karpenter"
+  version          = var.karpenter_version
+  create_namespace = false
 
-  image_id      = data.aws_ssm_parameter.eks_al2_ami.value
-  instance_type = var.nitro_instance_types[0]
-
-  # IMDSv2 required
-  metadata_options {
-    http_tokens                 = "required"
-    http_put_response_hop_limit = 1
-    http_endpoint               = "enabled"
-  }
-
-  # Enable Nitro Enclaves
-  enclave_options {
-    enabled = true
-  }
-
-  # Encrypted root volume
-  block_device_mappings {
-    device_name = "/dev/xvda"
-    ebs {
-      volume_type           = "gp3"
-      volume_size           = 50
-      encrypted             = true
-      kms_key_id            = aws_kms_key.ebs.arn
-      delete_on_termination = true
+  values = [yamlencode({
+    settings = {
+      clusterName     = aws_eks_cluster.main.name
+      clusterEndpoint = aws_eks_cluster.main.endpoint
     }
-  }
-
-  user_data = base64encode(templatefile("${path.module}/templates/node_userdata.sh.tpl", {
-    cluster_name      = var.cluster_name
-    enclave_memory_mb = var.enclave_memory_mb
-    enclave_cpu_count = var.enclave_cpu_count
-  }))
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name        = "${var.cluster_name}-nitro-node"
-      Environment = var.environment
-      ManagedBy   = "terraform"
+    tolerations = [{
+      key      = "CriticalAddonsOnly"
+      operator = "Exists"
+    }]
+    affinity = {
+      nodeAffinity = {
+        requiredDuringSchedulingIgnoredDuringExecution = {
+          nodeSelectorTerms = [{
+            matchExpressions = [{
+              key      = "kubernetes.io/os"
+              operator = "In"
+              values   = ["linux"]
+            }]
+          }]
+        }
+      }
     }
-  }
-
-  tag_specifications {
-    resource_type = "volume"
-    tags = {
-      Name        = "${var.cluster_name}-nitro-node-volume"
-      Environment = var.environment
-      ManagedBy   = "terraform"
-    }
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}
-
-# ── Nitro Enclave node group ──────────────────────────────────────────────────
-
-resource "aws_eks_node_group" "nitro" {
-  cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "${var.cluster_name}-nitro"
-  node_role_arn   = aws_iam_role.enclave_node.arn
-  subnet_ids      = aws_subnet.private[*].id
-
-  launch_template {
-    id      = aws_launch_template.nitro_enclave.id
-    version = "$Latest"
-  }
-
-  scaling_config {
-    desired_size = var.nitro_desired_size
-    min_size     = var.nitro_min_size
-    max_size     = var.nitro_max_size
-  }
-
-  update_config {
-    max_unavailable = 1
-  }
-
-  labels = {
-    "aws.amazon.com/nitro-enclaves" = "true"
-  }
+  })]
 
   depends_on = [
-    aws_iam_role_policy_attachment.enclave_node_worker,
-    aws_iam_role_policy_attachment.enclave_node_ecr,
-    aws_iam_role_policy.enclave_kms,
-    aws_iam_role_policy.enclave_secretsmanager,
-    aws_iam_role_policy.enclave_s3,
+    aws_eks_node_group.general,
+    aws_eks_addon.pod_identity_agent,
+    aws_eks_pod_identity_association.karpenter,
   ]
+}
 
-  tags = {
-    Name = "${var.cluster_name}-nitro"
+# ── EKS access entry — enclave node role (allows Karpenter-launched nodes to join) ──
+
+resource "aws_eks_access_entry" "enclave_node" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.enclave_node.arn
+  type          = "EC2_LINUX"
+
+  depends_on = [aws_eks_cluster.main]
+}
+
+# ── EKS access entry — test CodeBuild role (kubectl view access) ──────────────
+
+resource "aws_eks_access_entry" "codebuild_test" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.codebuild_test.arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "codebuild_test" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = aws_iam_role.codebuild_test.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+
+  access_scope {
+    type = "cluster"
   }
+
+  depends_on = [aws_eks_access_entry.codebuild_test]
 }
 
 # ── EKS Pod Identity Agent (must be installed before addon Pod Identity associations) ──
