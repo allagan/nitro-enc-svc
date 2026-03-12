@@ -1,18 +1,11 @@
 version: 0.2
 
 # Post-deploy smoke tests for nitro-enc-svc.
+# Runs inside the VPC so it can reach the internal NLB.
 #
-# Runs inside the VPC (VPC-enabled CodeBuild project) so it can reach the
-# internal NLB. Waits for DaemonSets to be ready, then runs:
-#   T-01  Health check  — GET /health → 200 {"status":"ok"}
-#   T-02  Encrypt round-trip — POST /encrypt with PII payload → ciphertext
-#   T-03  Load test  — ab keep-alive c=10 n=1000, zero failures required
-
-env:
-  exported-variables:
-    - NLB
-    - TPS
-    - FAILED
+# T-01  Health check  — GET /health → {"status":"ok"}
+# T-02  Encrypt round-trip — POST /encrypt → deterministic ciphertext
+# T-03  Load test — ab keep-alive c=10 n=1000, zero failures
 
 phases:
   install:
@@ -37,13 +30,18 @@ phases:
           -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
         echo "NLB hostname: $NLB"
         if [ -z "$NLB" ]; then echo "ERROR: NLB hostname not assigned"; exit 1; fi
-        export NLB="$NLB"
       - |
-        DEADLINE=$((SECONDS + 120))
-        while ! curl -sk --max-time 5 "https://$NLB:8443/health" > /dev/null 2>&1; do
-          [ $SECONDS -ge $DEADLINE ] && echo "ERROR: NLB not reachable after 120s" && exit 1
-          echo "Waiting for NLB..."; sleep 10
+        NLB=$(kubectl get svc vsock-proxy-nlb -n nitro-enc-svc \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        DEADLINE=$(( $(date +%s) + 120 ))
+        until curl -sk --max-time 5 "https://$NLB:8443/health" > /dev/null 2>&1; do
+          NOW=$(date +%s)
+          if [ "$NOW" -ge "$DEADLINE" ]; then
+            echo "ERROR: NLB not reachable after 120s"; exit 1
+          fi
+          echo "Waiting for NLB to be reachable..."; sleep 10
         done
+        echo "NLB is reachable"
 
   build:
     commands:
@@ -55,7 +53,7 @@ phases:
         HEALTH=$(curl -sk --max-time 10 "https://$NLB:8443/health")
         echo "T-01 response: $HEALTH"
         echo "$HEALTH" | grep -q '"status":"ok"' \
-          && echo "T-01 PASS" || (echo "T-01 FAIL" && exit 1)
+          && echo "T-01 PASS" || { echo "T-01 FAIL"; exit 1; }
 
         # T-02: Encrypt round-trip
         RESP=$(curl -sk --max-time 10 -X POST "https://$NLB:8443/encrypt" \
@@ -64,7 +62,7 @@ phases:
           -d '{"payload":{"card_number":"4111111111111111","card_holder_name":"Test User","billing_address":{"street":"1 Test St","city":"Columbus","zip":"43215"}}}')
         echo "T-02 response: $RESP"
         echo "$RESP" | grep -q '"card_number":"v1\.' \
-          && echo "T-02 PASS" || (echo "T-02 FAIL" && exit 1)
+          && echo "T-02 PASS" || { echo "T-02 FAIL"; exit 1; }
 
         # T-03: ab load test (keep-alive c=10 n=1000)
         echo '{"payload":{"card_number":"4111111111111111","card_holder_name":"Load Test","billing_address":{"street":"1 Main St","city":"Columbus","zip":"43215"}}}' > /tmp/body.json
@@ -75,14 +73,12 @@ phases:
         TPS=$(grep "Requests per second" /tmp/ab_output.txt | awk '{print $4}')
         FAILED=$(grep "Failed requests" /tmp/ab_output.txt | awk '{print $3}')
         echo "T-03: TPS=$TPS Failed=$FAILED"
-        [ "$FAILED" = "0" ] && echo "T-03 PASS" || (echo "T-03 FAIL — $FAILED failed" && exit 1)
+        [ "$FAILED" = "0" ] && echo "T-03 PASS" || { echo "T-03 FAIL — $FAILED failed"; exit 1; }
 
         # Write test report
         DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        cat > /tmp/test-report.json <<REPORT
-        {"date":"$DATE","cluster":"$CLUSTER_NAME","nlb":"$NLB",
-         "results":{"health":"PASS","encrypt":"PASS","load_tps":"$TPS","load_failed":"$FAILED"}}
-        REPORT
+        printf '{"date":"%s","cluster":"%s","nlb":"%s","results":{"health":"PASS","encrypt":"PASS","load_tps":"%s","load_failed":"%s"}}\n' \
+          "$DATE" "$CLUSTER_NAME" "$NLB" "$TPS" "$FAILED" > /tmp/test-report.json
         cat /tmp/test-report.json
         echo "All tests passed."
 
