@@ -163,7 +163,6 @@ resource "aws_security_group" "codebuild_test" {
 }
 
 # Allow test CodeBuild to reach the EKS private API endpoint (port 443).
-# The cluster security group controls access to the private VPC endpoint.
 resource "aws_security_group_rule" "codebuild_test_to_eks_api" {
   type                     = "ingress"
   from_port                = 443
@@ -172,6 +171,19 @@ resource "aws_security_group_rule" "codebuild_test_to_eks_api" {
   security_group_id        = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
   source_security_group_id = aws_security_group.codebuild_test.id
   description              = "Allow test CodeBuild to reach EKS private API endpoint"
+}
+
+# Allow test CodeBuild to reach NodePorts on EKS nodes (for NLB → node routing).
+# The internal NLB translates port 8443 to the vsock-proxy NodePort (30000-32767 range).
+# With externalTrafficPolicy=Local, the client IP (CodeBuild) is the source seen by the node.
+resource "aws_security_group_rule" "codebuild_test_to_eks_nodeport" {
+  type                     = "ingress"
+  from_port                = 30000
+  to_port                  = 32767
+  protocol                 = "tcp"
+  security_group_id        = aws_eks_cluster.main.vpc_config[0].cluster_security_group_id
+  source_security_group_id = aws_security_group.codebuild_test.id
+  description              = "Allow test CodeBuild to reach EKS NodePorts via NLB"
 }
 
 resource "aws_codebuild_project" "test" {
