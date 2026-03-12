@@ -371,11 +371,18 @@ resource "aws_iam_role_policy" "codebuild_test_eks" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "eks:DescribeCluster"
-      Resource = "arn:aws:eks:${var.aws_region}:${var.account_id}:cluster/${var.cluster_name}"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "eks:DescribeCluster"
+        Resource = "arn:aws:eks:${var.aws_region}:${var.account_id}:cluster/${var.cluster_name}"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "sts:GetCallerIdentity"
+        Resource = "*"
+      },
+    ]
   })
 }
 

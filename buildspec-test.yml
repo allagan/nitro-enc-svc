@@ -1,11 +1,14 @@
 version: 0.2
 
-# Post-deploy smoke tests for nitro-enc-svc.
+# DeployAndTest stage for nitro-enc-svc.
 # Runs inside the VPC so it can reach the internal NLB.
 #
-# T-01  Health check  — GET /health → {"status":"ok"}
-# T-02  Encrypt round-trip — POST /encrypt → deterministic ciphertext
-# T-03  Load test — ab keep-alive c=10 n=1000, zero failures
+# Steps:
+#   1. Update DaemonSet images to the commit IMAGE_TAG built in Stage 2
+#   2. Wait for DaemonSet rollout
+#   3. T-01  Health check  — GET /health → {"status":"ok"}
+#   4. T-02  Encrypt round-trip — POST /encrypt → deterministic ciphertext
+#   5. T-03  Load test — ab keep-alive c=10 n=1000, zero failures
 
 phases:
   install:
@@ -19,6 +22,15 @@ phases:
     commands:
       - aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
       - kubectl cluster-info
+      - |
+        IMAGE_TAG=$(echo "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-7)
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        ECR="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        RUNNER_IMG="${ECR}/nitro-enc-svc/dev/runner:${IMAGE_TAG}"
+        PROXY_IMG="${ECR}/nitro-enc-svc/dev/vsock-proxy:${IMAGE_TAG}"
+        echo "Deploying IMAGE_TAG=$IMAGE_TAG"
+        kubectl set image daemonset/nitro-enclave enclave-runner="$RUNNER_IMG" -n nitro-enc-svc
+        kubectl set image daemonset/vsock-proxy vsock-proxy="$PROXY_IMG" -n nitro-enc-svc
       - |
         echo "Waiting for nitro-enclave DaemonSet..."
         kubectl rollout status daemonset/nitro-enclave -n nitro-enc-svc --timeout=300s

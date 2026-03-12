@@ -89,6 +89,111 @@ resource "aws_eks_node_group" "general" {
   }
 }
 
+# ── Nitro Enclave launch template ─────────────────────────────────────────────
+
+data "aws_ssm_parameter" "eks_al2_ami" {
+  name = "/aws/service/eks/optimized-ami/${var.cluster_version}/amazon-linux-2/recommended/image_id"
+}
+
+resource "aws_launch_template" "nitro_enclave" {
+  name_prefix = "${var.cluster_name}-nitro-"
+  description = "Launch template for EKS nodes with Nitro Enclave support"
+
+  image_id      = data.aws_ssm_parameter.eks_al2_ami.value
+  instance_type = var.nitro_instance_types[0]
+
+  metadata_options {
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+    http_endpoint               = "enabled"
+  }
+
+  enclave_options {
+    enabled = true
+  }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_type           = "gp3"
+      volume_size           = 50
+      encrypted             = true
+      kms_key_id            = aws_kms_key.ebs.arn
+      delete_on_termination = true
+    }
+  }
+
+  user_data = base64encode(templatefile("${path.module}/templates/node_userdata.sh.tpl", {
+    cluster_name      = var.cluster_name
+    enclave_memory_mb = var.enclave_memory_mb
+    enclave_cpu_count = var.enclave_cpu_count
+    aws_region        = var.aws_region
+  }))
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name        = "${var.cluster_name}-nitro-node"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+    }
+  }
+
+  tag_specifications {
+    resource_type = "volume"
+    tags = {
+      Name        = "${var.cluster_name}-nitro-node-volume"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+    }
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# ── Nitro Enclave node group ──────────────────────────────────────────────────
+
+resource "aws_eks_node_group" "nitro" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-nitro"
+  node_role_arn   = aws_iam_role.enclave_node.arn
+  subnet_ids      = [aws_subnet.private[0].id] # single AZ keeps vsock-proxy co-located
+
+  launch_template {
+    id      = aws_launch_template.nitro_enclave.id
+    version = "$Latest"
+  }
+
+  scaling_config {
+    desired_size = var.nitro_desired_size
+    min_size     = var.nitro_min_size
+    max_size     = var.nitro_max_size
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  labels = {
+    "aws.amazon.com/nitro-enclaves" = "true"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.enclave_node_worker,
+    aws_iam_role_policy_attachment.enclave_node_ecr,
+    aws_iam_role_policy.enclave_kms,
+    aws_iam_role_policy.enclave_secretsmanager,
+    aws_iam_role_policy.enclave_s3,
+    aws_eks_access_entry.enclave_node,
+  ]
+
+  tags = {
+    Name = "${var.cluster_name}-nitro"
+  }
+}
+
 # ── Karpenter (Helm) ──────────────────────────────────────────────────────────
 
 resource "helm_release" "karpenter" {
@@ -151,7 +256,7 @@ resource "aws_eks_access_entry" "codebuild_test" {
 resource "aws_eks_access_policy_association" "codebuild_test" {
   cluster_name  = aws_eks_cluster.main.name
   principal_arn = aws_iam_role.codebuild_test.arn
-  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
 
   access_scope {
     type = "cluster"
