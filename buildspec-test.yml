@@ -8,7 +8,8 @@ version: 0.2
 #   2. Wait for DaemonSet rollout
 #   3. T-01  Health check  — GET /health → {"status":"ok"}
 #   4. T-02  Encrypt round-trip — POST /encrypt → deterministic ciphertext
-#   5. T-03  Load test — ab keep-alive c=10 n=1000, zero failures
+#   5. T-03  Decrypt round-trip — POST /decrypt → original plaintext recovered
+#   6. T-04  Load test — ab keep-alive c=10 n=1000, zero failures
 
 phases:
   install:
@@ -68,15 +69,27 @@ phases:
           && echo "T-01 PASS" || { echo "T-01 FAIL"; exit 1; }
 
         # T-02: Encrypt round-trip
+        PLAINTEXT_CARD="4111111111111111"
         RESP=$(curl -sk --max-time 10 -X POST "https://$NLB:8443/encrypt" \
           -H "Content-Type: application/json" \
           -H "X-Schema-Name: payments-v1" \
-          -d '{"payload":{"card_number":"4111111111111111","card_holder_name":"Test User","billing_address":{"street":"1 Test St","city":"Columbus","zip":"43215"}}}')
+          -d "{\"payload\":{\"card_number\":\"$PLAINTEXT_CARD\",\"card_holder_name\":\"Test User\",\"billing_address\":{\"street\":\"1 Test St\",\"city\":\"Columbus\",\"zip\":\"43215\"}}}")
         echo "T-02 response: $RESP"
         echo "$RESP" | grep -q '"card_number":"v1\.' \
           && echo "T-02 PASS" || { echo "T-02 FAIL"; exit 1; }
 
-        # T-03: ab load test (keep-alive c=10 n=1000)
+        # T-03: Decrypt round-trip — encrypt then decrypt must recover plaintext
+        ENCRYPTED_CARD=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['payload']['card_number'])")
+        DEC_RESP=$(curl -sk --max-time 10 -X POST "https://$NLB:8443/decrypt" \
+          -H "Content-Type: application/json" \
+          -H "X-Schema-Name: payments-v1" \
+          -d "{\"payload\":{\"card_number\":\"$ENCRYPTED_CARD\"}}")
+        echo "T-03 response: $DEC_RESP"
+        RECOVERED=$(echo "$DEC_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['payload']['card_number'])")
+        [ "$RECOVERED" = "$PLAINTEXT_CARD" ] \
+          && echo "T-03 PASS" || { echo "T-03 FAIL — got $RECOVERED, want $PLAINTEXT_CARD"; exit 1; }
+
+        # T-04: ab load test (keep-alive c=10 n=1000)
         echo '{"payload":{"card_number":"4111111111111111","card_holder_name":"Load Test","billing_address":{"street":"1 Main St","city":"Columbus","zip":"43215"}}}' > /tmp/body.json
         ab -k -c 10 -n 1000 \
           -p /tmp/body.json -T "application/json" \
@@ -84,12 +97,12 @@ phases:
           "https://$NLB:8443/encrypt" | tee /tmp/ab_output.txt
         TPS=$(grep "Requests per second" /tmp/ab_output.txt | awk '{print $4}')
         FAILED=$(grep "Failed requests" /tmp/ab_output.txt | awk '{print $3}')
-        echo "T-03: TPS=$TPS Failed=$FAILED"
-        [ "$FAILED" = "0" ] && echo "T-03 PASS" || { echo "T-03 FAIL — $FAILED failed"; exit 1; }
+        echo "T-04: TPS=$TPS Failed=$FAILED"
+        [ "$FAILED" = "0" ] && echo "T-04 PASS" || { echo "T-04 FAIL — $FAILED failed"; exit 1; }
 
         # Write test report
         DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        printf '{"date":"%s","cluster":"%s","nlb":"%s","results":{"health":"PASS","encrypt":"PASS","load_tps":"%s","load_failed":"%s"}}\n' \
+        printf '{"date":"%s","cluster":"%s","nlb":"%s","results":{"health":"PASS","encrypt":"PASS","decrypt":"PASS","load_tps":"%s","load_failed":"%s"}}\n' \
           "$DATE" "$CLUSTER_NAME" "$NLB" "$TPS" "$FAILED" > /tmp/test-report.json
         cat /tmp/test-report.json
         echo "All tests passed."

@@ -54,6 +54,31 @@ impl ErrorResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Decrypt endpoint
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /decrypt`.
+///
+/// The `payload` field contains an arbitrary JSON object whose PII fields
+/// (as identified by the OpenAPI schema in the `X-Schema-Name` header) will
+/// be decrypted from `v1.<nonce>.<ciphertext>` strings back to plaintext.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecryptRequest {
+    /// Arbitrary JSON object containing encrypted PII fields to decrypt.
+    pub payload: serde_json::Value,
+}
+
+/// Successful response body for `POST /decrypt`.
+///
+/// The `payload` field mirrors the input structure with encrypted PII fields
+/// replaced by their original plaintext strings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecryptResponse {
+    /// Transformed JSON object with PII fields decrypted to plaintext.
+    pub payload: serde_json::Value,
+}
+
+// ---------------------------------------------------------------------------
 // Health check
 // ---------------------------------------------------------------------------
 
@@ -88,6 +113,26 @@ mod tests {
         let e = ErrorResponse::new("bad_request", "missing schema header");
         assert_eq!(e.code, "bad_request");
         assert!(e.message.contains("missing schema header"));
+    }
+
+    #[test]
+    fn decrypt_request_round_trip() {
+        let req = DecryptRequest {
+            payload: json!({"ssn": "v1.abc.def", "name": "Alice"}),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let decoded: DecryptRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.payload["ssn"], "v1.abc.def");
+    }
+
+    #[test]
+    fn decrypt_response_round_trip() {
+        let resp = DecryptResponse {
+            payload: json!({"ssn": "123-45-6789"}),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let decoded: DecryptResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.payload["ssn"], "123-45-6789");
     }
 
     #[test]

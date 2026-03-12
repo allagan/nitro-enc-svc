@@ -128,6 +128,9 @@ resource "aws_launch_template" "nitro_enclave" {
     enclave_memory_mb = var.enclave_memory_mb
     enclave_cpu_count = var.enclave_cpu_count
     aws_region        = var.aws_region
+    # Pass the ACM cert ARN when tls_domain is configured; empty string otherwise.
+    # The userdata skips aws-nitro-enclaves-acm installation when this is empty.
+    acm_cert_arn = local.acm_enabled ? aws_acm_certificate.enclave_tls[0].arn : ""
   }))
 
   tag_specifications {

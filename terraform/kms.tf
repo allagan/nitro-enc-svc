@@ -38,16 +38,40 @@ resource "aws_kms_key" "enclave_dek" {
       # TODO: Once NSM attested decrypt is implemented in dek/mod.rs, change
       # this back to a RecipientAttestation:PCR0 condition so that only a
       # genuine enclave with the correct image measurement can decrypt the DEK.
+      # When kms_enclave_pcr0 is set: enforce NSM attestation on Decrypt so only
+      # an enclave whose EIF produces the expected PCR0 measurement can decrypt
+      # the DEK.  PCR0 is a SHA-384 hash of the enclave image file contents and
+      # changes on every build.  Update terraform.tfvars after each CodeBuild run.
+      #
+      # The KMS key policy condition kms:RecipientAttestation:PCR0 is evaluated
+      # when the KMS Decrypt call includes a RecipientAttestation parameter
+      # containing a valid NSM attestation document (see dek/mod.rs for the
+      # aws-nitro-enclaves-sdk-rust integration).
+      #
+      # When kms_enclave_pcr0 is empty (dev mode): standard IAM Decrypt is
+      # allowed without attestation — the DEK can be fetched by any process
+      # with the enclave_node IAM role.
       [
-        {
-          Sid    = "AllowEnclaveDecrypt"
-          Effect = "Allow"
-          Principal = {
-            AWS = aws_iam_role.enclave_node.arn
-          }
-          Action   = ["kms:Decrypt", "kms:DescribeKey"]
-          Resource = "*"
-        }
+        merge(
+          {
+            Sid    = var.kms_enclave_pcr0 != "" ? "AllowEnclaveDecryptWithAttestation" : "AllowEnclaveDecryptDevMode"
+            Effect = "Allow"
+            Principal = {
+              AWS = aws_iam_role.enclave_node.arn
+            }
+            Action   = ["kms:Decrypt", "kms:DescribeKey"]
+            Resource = "*"
+          },
+          # When PCR0 is set, add the RecipientAttestation condition so only
+          # a genuine enclave with that image measurement can decrypt the DEK.
+          var.kms_enclave_pcr0 != "" ? {
+            Condition = {
+              StringEqualsIgnoreCase = {
+                "kms:RecipientAttestation:PCR0" = var.kms_enclave_pcr0
+              }
+            }
+          } : {}
+        )
       ]
     )
   })

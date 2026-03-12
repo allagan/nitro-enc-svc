@@ -20,6 +20,10 @@ pub struct Metrics {
     pub encrypt_requests: Counter<u64>,
     /// Latency of `/encrypt` requests in milliseconds. Label: `status` = `"success"` | `"error"`.
     pub encrypt_latency_ms: Histogram<f64>,
+    /// Count of `/decrypt` requests. Label: `status` = `"success"` | `"error"`.
+    pub decrypt_requests: Counter<u64>,
+    /// Latency of `/decrypt` requests in milliseconds. Label: `status` = `"success"` | `"error"`.
+    pub decrypt_latency_ms: Histogram<f64>,
     /// Count of successful DEK rotations (background task).
     pub dek_rotations: Counter<u64>,
 }
@@ -38,6 +42,15 @@ impl Metrics {
             encrypt_latency_ms: meter
                 .f64_histogram("enclave_encrypt_latency_ms")
                 .with_description("Latency of /encrypt requests in milliseconds")
+                .with_unit(Unit::new("ms"))
+                .init(),
+            decrypt_requests: meter
+                .u64_counter("enclave_decrypt_requests")
+                .with_description("Total number of /decrypt requests")
+                .init(),
+            decrypt_latency_ms: meter
+                .f64_histogram("enclave_decrypt_latency_ms")
+                .with_description("Latency of /decrypt requests in milliseconds")
                 .with_unit(Unit::new("ms"))
                 .init(),
             dek_rotations: meter

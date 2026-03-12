@@ -6,8 +6,16 @@ set -euo pipefail
 #
 # This script runs on first boot before the node joins the EKS cluster.
 # It installs the Nitro Enclaves CLI, configures the nitro-enclaves-allocator,
-# sets up aws-vsock-proxy systemd units for each AWS endpoint, then joins
-# the cluster.
+# sets up aws-vsock-proxy systemd units for each AWS endpoint, optionally
+# installs aws-nitro-enclaves-acm (p7_proxy) for ACM certificate delivery,
+# then joins the cluster.
+#
+# Template variables:
+#   cluster_name      — EKS cluster name for bootstrap
+#   enclave_memory_mb — MiB to reserve for the enclave
+#   enclave_cpu_count — vCPUs to reserve for the enclave
+#   aws_region        — AWS region (e.g. us-east-2)
+#   acm_cert_arn      — ACM certificate ARN (empty = skip ACM setup)
 # ---------------------------------------------------------------------------
 
 # 1. Install Nitro Enclaves CLI.
@@ -69,7 +77,52 @@ UNIT
   systemctl start "$NAME"
 done
 
-# 5. Bootstrap the EKS node.
+# 5. (Optional) Install aws-nitro-enclaves-acm when an ACM certificate ARN is
+#    configured. This installs p7_proxy which listens on vsock port 9005 and
+#    delivers the ACM-managed TLS certificate + attestation-bound private key
+#    to acm-ray running inside the enclave.
+#
+#    The enclave's acm-ray writes the cert and key to:
+#      /etc/acm/tls.crt  (TLS_CERT_PATH)
+#      /etc/acm/tls.key  (TLS_KEY_PATH)
+#
+#    Full integration requires the EIF to be rebuilt to include acm-ray.
+#    Until then the enclave uses the self-signed cert baked at build time.
+ACM_CERT_ARN="${acm_cert_arn}"
+if [ -n "$ACM_CERT_ARN" ]; then
+  echo "--- [5] Installing aws-nitro-enclaves-acm (ACM cert: $ACM_CERT_ARN) ---"
+
+  # Install the ACM for Nitro Enclaves package (provides p7_proxy).
+  amazon-linux-extras install -y aws-nitro-enclaves-acm 2>/dev/null || \
+    yum install -y aws-nitro-enclaves-acm
+
+  # Write the acm configuration pointing to the provisioned certificate.
+  mkdir -p /etc/nitro_enclaves
+  cat > /etc/nitro_enclaves/acm.yaml <<ACM_CFG
+---
+certificate:
+  - arn: $ACM_CERT_ARN
+    acm:
+      endpoint: https://acm.${aws_region}.amazonaws.com
+    # p7_proxy delivers the cert/key to acm-ray inside the enclave
+    # over vsock port 9005 (default). acm-ray writes them to the paths
+    # below, which map to TLS_CERT_PATH / TLS_KEY_PATH in the enclave.
+    enclave:
+      vsock_port: 9005
+    options:
+      # Write cert and key to files so rustls can load them directly.
+      cert_path: /etc/acm/tls.crt
+      key_path: /etc/acm/tls.key
+ACM_CFG
+
+  systemctl enable nitro-enclaves-acm
+  systemctl start  nitro-enclaves-acm
+  echo "aws-nitro-enclaves-acm started (p7_proxy vsock port 9005)"
+else
+  echo "--- [5] ACM_CERT_ARN not set — skipping aws-nitro-enclaves-acm (using self-signed cert) ---"
+fi
+
+# 6. Bootstrap the EKS node.
 #    The node-label tells the DaemonSet node selector where to schedule
 #    the enclave runner pod.
 /etc/eks/bootstrap.sh "${cluster_name}" \

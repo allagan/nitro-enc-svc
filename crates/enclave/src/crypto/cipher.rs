@@ -34,8 +34,6 @@ pub const VERSION_PREFIX: &str = "v1";
 /// A parsed, encrypted field value.
 ///
 /// The string representation is `v1.<base64url(nonce)>.<base64url(ciphertext+tag)>`.
-// Retained for the future `POST /decrypt` endpoint.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncryptedField {
     /// Raw nonce bytes.
@@ -61,8 +59,6 @@ impl EncryptedField {
     ///
     /// Returns [`CipherError::InvalidFormat`] if the string does not match the
     /// expected `v1.<nonce>.<ciphertext>` structure.
-    // Retained for the future `POST /decrypt` endpoint.
-    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Result<Self, CipherError> {
         let parts: Vec<&str> = s.splitn(3, '.').collect();
         if parts.len() != 3 || parts[0] != VERSION_PREFIX {
@@ -97,8 +93,6 @@ pub enum CipherError {
     AeadFailure,
 
     /// The encrypted field string does not match the expected format.
-    // Retained for the future `POST /decrypt` endpoint.
-    #[allow(dead_code)]
     #[error("invalid encrypted field format")]
     InvalidFormat,
 }
@@ -154,8 +148,6 @@ pub fn encrypt_field(plaintext: &[u8], dek: &[u8]) -> Result<EncryptedField, Cip
 ///
 /// Returns [`CipherError::InvalidKeyLength`] if `dek` is not [`KEY_LEN`] bytes.
 /// Returns [`CipherError::AeadFailure`] if authentication fails (wrong key or tampered data).
-// Retained for the future `POST /decrypt` endpoint.
-#[allow(dead_code)]
 pub fn decrypt_field(field: &EncryptedField, dek: &[u8]) -> Result<Vec<u8>, CipherError> {
     let cipher = build_cipher(dek)?;
     let nonce = Nonce::from_slice(&field.nonce);

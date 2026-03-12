@@ -12,6 +12,7 @@ use super::{handlers, middleware, state::AppState};
 pub fn build(state: AppState) -> Router {
     Router::new()
         .route("/encrypt", post(handlers::encrypt))
+        .route("/decrypt", post(handlers::decrypt))
         .route("/health", get(handlers::health))
         .fallback(handlers::not_found)
         .layer(TraceLayer::new_for_http())
@@ -38,6 +39,20 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn decrypt_route_exists() {
+        let app = build(AppState::default());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/decrypt")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"payload":{}}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // 400 because the X-Schema-Name header is absent (checked before DEK readiness).
+        assert_eq!(resp.status(), 400);
     }
 
     #[tokio::test]

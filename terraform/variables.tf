@@ -230,3 +230,18 @@ variable "tls_port" {
   type        = number
   default     = 443
 }
+
+# ── ACM for Nitro Enclaves (optional) ────────────────────────────────────────
+
+variable "tls_domain" {
+  description = <<-EOT
+    Fully-qualified domain name for the ACM-managed TLS certificate.
+    Leave empty ("") to skip ACM certificate provisioning — the enclave will use
+    the self-signed certificate baked into the EIF at build time (dev/test only).
+    When set, an ACM certificate is provisioned (DNS validation) and the
+    aws-nitro-enclaves-acm agent is installed on enclave nodes to deliver the
+    private key into the enclave using attestation-bound decryption.
+  EOT
+  type        = string
+  default     = ""
+}
